@@ -25,6 +25,9 @@ from data.app_data import (
     build_general_table,
     compute_kpis,
     load_customer_overview_df,
+    load_customer_segment_df,
+    load_customer_client_keys,
+    load_customer_history_df,
 )
 
 
@@ -394,30 +397,32 @@ def update_customer_overview(metric, segments, branches, year, months, client, c
         "kategorija": categories or None,
     }
 
-    df = load_customer_overview_df(filters)
+    summary_df = load_customer_overview_df(filters)
+    segment_df = load_customer_segment_df(filters)
+    client_keys_df = load_customer_client_keys(filters)
 
-    kpis = compute_kpis(df, year, months_filter)
+    kpis = compute_kpis(summary_df, year, months_filter, client_keys_df)
     kpi_cards = _render_kpi_cards(kpis, metric)
 
-    summary_columns, summary_data = build_general_table(df)
+    summary_columns, summary_data = build_general_table(segment_df)
 
     matrix_title = "Kliento mėnesinė dinamika"
-    matrix_columns, matrix_data = build_client_matrix(df.iloc[0:0], [], metric)
+    history_df = load_customer_history_df(filters)
+    matrix_columns, matrix_data = build_client_matrix(history_df.iloc[0:0], [], metric)
     matrix_message = "Pasirinkite klientą…"
 
-    if client or code:
-        available_years = sorted({int(y) for y in df["Metai"].unique() if year - 3 <= int(y) <= year})
+    if (client or code) and not history_df.empty:
+        available_years = sorted(
+            {int(y) for y in history_df["Metai"].unique() if year - 3 <= int(y) <= year}
+        )
         ordered_years = [y for y in [year, year - 1, year - 2, year - 3] if y in available_years]
-        matrix_columns, matrix_data = build_client_matrix(df, ordered_years, metric)
+        matrix_columns, matrix_data = build_client_matrix(history_df, ordered_years, metric)
         if client:
             matrix_title = f"Kliento mėnesinė dinamika – {client}"
         elif code:
             matrix_title = f"Kliento mėnesinė dinamika – {code}"
 
-        if matrix_data:
-            matrix_message = ""
-        else:
-            matrix_message = "Pasirinktai kombinacijai nėra duomenų."
+        matrix_message = "" if matrix_data else "Pasirinktai kombinacijai nėra duomenų."
 
     return (
         kpi_cards,

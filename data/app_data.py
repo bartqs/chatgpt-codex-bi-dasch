@@ -9,6 +9,7 @@ used across the dashboard pages.
 from __future__ import annotations
 
 import os
+import time
 from functools import lru_cache
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -306,6 +307,13 @@ def _month_order_map() -> Dict[str, int]:
 MONTH_ORDER = _month_order_map()
 
 
+_CACHE_TTL_SECONDS = 300
+_customer_summary_cache: Dict[Tuple[Any, ...], Tuple[float, pd.DataFrame]] = {}
+_customer_segment_cache: Dict[Tuple[Any, ...], Tuple[float, pd.DataFrame]] = {}
+_customer_history_cache: Dict[Tuple[Any, ...], Tuple[float, pd.DataFrame]] = {}
+_customer_clients_cache: Dict[Tuple[Any, ...], Tuple[float, pd.DataFrame]] = {}
+
+
 def _add_expanding_params(stmt, params: Dict[str, Any]) -> Any:
     """Bind SQLAlchemy expanding parameters for sequence values."""
 
@@ -315,22 +323,69 @@ def _add_expanding_params(stmt, params: Dict[str, Any]) -> Any:
     return stmt
 
 
-def load_customer_overview_df(filters: Dict[str, Any]) -> pd.DataFrame:
-    """Fetch aggregated customer overview data with SQL pushdown filtering."""
+def _cache_key_from_filters(prefix: str, filters: Dict[str, Any]) -> Tuple[Any, ...]:
+    """Create a hashable cache key based on normalized filter values."""
 
-    year = int(filters.get("metai") or CUSTOMER_DEFAULT_YEAR)
-    years_window = sorted({y for y in range(year - 3, year + 1) if y > 0})
+    normalized: List[Any] = [prefix]
+    for key in sorted(filters.keys()):
+        value = filters[key]
+        if value is None or value == []:
+            normalized.append((key, None))
+            continue
 
-    year_col = CUSTOMER_COLUMNS["year"]
+        if isinstance(value, (list, tuple, set)):
+            if key == "menuo":
+                ordered = sorted(
+                    [str(item) for item in value],
+                    key=lambda m: MONTH_ORDER.get(str(m), 999),
+                )
+                normalized.append((key, tuple(ordered)))
+            else:
+                normalized.append((key, tuple(sorted(value))))
+        else:
+            normalized.append((key, value))
+    return tuple(normalized)
+
+
+def _cache_get(cache: Dict[Tuple[Any, ...], Tuple[float, pd.DataFrame]], key: Tuple[Any, ...]) -> Optional[pd.DataFrame]:
+    """Return a copy of cached dataframe if TTL not expired."""
+
+    entry = cache.get(key)
+    if not entry:
+        return None
+
+    timestamp, df = entry
+    if time.time() - timestamp > _CACHE_TTL_SECONDS:
+        cache.pop(key, None)
+        return None
+
+    # Return a shallow copy to prevent accidental mutation of cached object
+    return df.copy(deep=False)
+
+
+def _cache_set(
+    cache: Dict[Tuple[Any, ...], Tuple[float, pd.DataFrame]],
+    key: Tuple[Any, ...],
+    df: pd.DataFrame,
+) -> None:
+    """Store dataframe in cache with timestamp."""
+
+    cache[key] = (time.time(), df.copy(deep=False))
+
+
+def _build_customer_where_clauses(
+    year_col: str,
+    years_window: Sequence[int],
+    filters: Dict[str, Any],
+) -> Tuple[List[str], Dict[str, Any]]:
+    """Prepare WHERE clauses and params shared across customer queries."""
+
     month_col = CUSTOMER_COLUMNS["month"]
     branch_expr = _coalesce_expr(CUSTOMER_COLUMNS["branch"], "Nežinomas")
     segment_expr = _coalesce_expr(CUSTOMER_COLUMNS["segment"], "Nepriskirta")
     category_expr = _coalesce_expr(CUSTOMER_COLUMNS["category"], "Nepriskirta")
     customer_expr = _coalesce_expr(CUSTOMER_COLUMNS["customer"], "Nežinomas klientas")
     code_expr = _coalesce_expr(CUSTOMER_COLUMNS["customer_code"], "ND")
-    turnover_col = CUSTOMER_COLUMNS["turnover"]
-    profit_col = CUSTOMER_COLUMNS["profit"]
-    quantity_col = CUSTOMER_COLUMNS["quantity"]
 
     where_clauses = [f"CAST({year_col} AS UNSIGNED) IN :years"]
     params: Dict[str, Any] = {"years": years_window}
@@ -348,29 +403,47 @@ def load_customer_overview_df(filters: Dict[str, Any]) -> pd.DataFrame:
         where_clauses.append(f"{category_expr} IN :kategorija")
 
     if filters.get("klientas"):
-        params["klientas"] = [filters["klientas"]] if isinstance(filters["klientas"], str) else filters["klientas"]
+        value = filters["klientas"]
+        params["klientas"] = [value] if isinstance(value, str) else value
         where_clauses.append(f"{customer_expr} IN :klientas")
 
     if filters.get("kliento_kodas") and CUSTOMER_COLUMNS["customer_code"]:
-        params["kliento_kodas"] = [filters["kliento_kodas"]] if isinstance(filters["kliento_kodas"], str) else filters["kliento_kodas"]
+        value = filters["kliento_kodas"]
+        params["kliento_kodas"] = [value] if isinstance(value, str) else value
         where_clauses.append(f"{code_expr} IN :kliento_kodas")
 
     if filters.get("menuo"):
         params["menuo"] = filters["menuo"]
         where_clauses.append(f"{month_col} IN :menuo")
 
-    where_sql = "\n      AND ".join(where_clauses)
+    return where_clauses, params
+
+
+def load_customer_overview_df(filters: Dict[str, Any]) -> pd.DataFrame:
+    """Fetch aggregated customer overview data with SQL pushdown filtering."""
+
+    year = int(filters.get("metai") or CUSTOMER_DEFAULT_YEAR)
+    years_window = sorted({y for y in range(year - 3, year + 1) if y > 0})
+
+    year_col = CUSTOMER_COLUMNS["year"]
+    month_col = CUSTOMER_COLUMNS["month"]
+    turnover_col = CUSTOMER_COLUMNS["turnover"]
+    profit_col = CUSTOMER_COLUMNS["profit"]
+    quantity_col = CUSTOMER_COLUMNS["quantity"]
+
+    where_clauses, params = _build_customer_where_clauses(year_col, years_window, filters)
+    where_sql = "\n          AND ".join(where_clauses)
+
+    cache_key = _cache_key_from_filters("summary", {**filters, "years": tuple(years_window)})
+    cached = _cache_get(_customer_summary_cache, cache_key)
+    if cached is not None:
+        return cached
 
     stmt = text(
         f"""
         SELECT
             CAST({year_col} AS UNSIGNED)                                     AS Metai,
             {month_col}                                                      AS Menuo,
-            {branch_expr}                                                    AS Filialas,
-            {segment_expr}                                                   AS Segmentas,
-            {category_expr}                                                  AS Kategorija,
-            {customer_expr}                                                  AS Klientas,
-            {code_expr}                                                      AS KlientoKodas,
             SUM(CAST({turnover_col} AS DECIMAL(18,2)))                        AS Apyvarta,
             SUM(CAST({profit_col}   AS DECIMAL(18,2)))                        AS Pajamos,
             SUM(CAST({quantity_col} AS DECIMAL(18,2)))                        AS Kiekis
@@ -380,12 +453,7 @@ def load_customer_overview_df(filters: Dict[str, Any]) -> pd.DataFrame:
           AND {where_sql}
         GROUP BY
             CAST({year_col} AS UNSIGNED),
-            {month_col},
-            {branch_expr},
-            {segment_expr},
-            {category_expr},
-            {customer_expr},
-            {code_expr}
+            {month_col}
         """
     )
 
@@ -395,28 +463,20 @@ def load_customer_overview_df(filters: Dict[str, Any]) -> pd.DataFrame:
         df = pd.read_sql(stmt, conn, params=params)
 
     if df.empty:
-        return df.assign(**{
-            "MARŽA %": pd.Series(dtype="float32"),
-            "VPK": pd.Series(dtype="float32"),
-            "VPP": pd.Series(dtype="float32"),
-            "Kliento kodas": pd.Series(dtype="object"),
-        })
+        empty = df.assign(
+            **{
+                "MARŽA %": pd.Series(dtype="float32"),
+                "VPK": pd.Series(dtype="float32"),
+                "VPP": pd.Series(dtype="float32"),
+            }
+        )
+        _cache_set(_customer_summary_cache, cache_key, empty)
+        return empty
 
     df["Metai"] = pd.to_numeric(df["Metai"], errors="coerce").astype("int16")
     df["Menuo"] = pd.Categorical(df["Menuo"].astype(str), categories=MENUO_TVARKA, ordered=True)
-
     for col in ["Apyvarta", "Pajamos", "Kiekis"]:
         df[col] = pd.to_numeric(df[col], errors="coerce").astype("float64")
-
-    df["Segmentas"] = df["Segmentas"].fillna("Nepriskirta")
-    df["Kategorija"] = df["Kategorija"].fillna("Nepriskirta")
-    df["Filialas"] = df["Filialas"].fillna("Nežinomas")
-    df["Klientas"] = df["Klientas"].fillna("Nežinomas klientas")
-    df["KlientoKodas"] = df["KlientoKodas"].fillna("ND").astype(str)
-    df.rename(columns={"KlientoKodas": "Kliento kodas"}, inplace=True)
-
-    turnover_sum = df["Apyvarta"].sum()
-    profit_sum = df["Pajamos"].sum()
 
     df["MARŽA %"] = np.where(
         df["Apyvarta"] != 0,
@@ -436,14 +496,251 @@ def load_customer_overview_df(filters: Dict[str, Any]) -> pd.DataFrame:
         np.nan,
     ).astype("float32")
 
-    df["_customer_key"] = df["Kliento kodas"].where(
-        df["Kliento kodas"].str.strip().ne("ND"), df["Klientas"]
+    _cache_set(_customer_summary_cache, cache_key, df)
+    return df
+
+
+def load_customer_segment_df(filters: Dict[str, Any]) -> pd.DataFrame:
+    """Load segment-level aggregates for the customer overview table."""
+
+    year = int(filters.get("metai") or CUSTOMER_DEFAULT_YEAR)
+    years_window = sorted({y for y in range(year - 3, year + 1) if y > 0})
+
+    year_col = CUSTOMER_COLUMNS["year"]
+    month_col = CUSTOMER_COLUMNS["month"]
+    segment_expr = _coalesce_expr(CUSTOMER_COLUMNS["segment"], "Nepriskirta")
+    turnover_col = CUSTOMER_COLUMNS["turnover"]
+    profit_col = CUSTOMER_COLUMNS["profit"]
+    quantity_col = CUSTOMER_COLUMNS["quantity"]
+
+    where_clauses, params = _build_customer_where_clauses(year_col, years_window, filters)
+    where_sql = "\n          AND ".join(where_clauses)
+
+    cache_key = _cache_key_from_filters("segment", {**filters, "years": tuple(years_window)})
+    cached = _cache_get(_customer_segment_cache, cache_key)
+    if cached is not None:
+        return cached
+
+    stmt = text(
+        f"""
+        SELECT
+            {segment_expr}                                                   AS Segmentas,
+            SUM(CAST({turnover_col} AS DECIMAL(18,2)))                        AS Apyvarta,
+            SUM(CAST({profit_col}   AS DECIMAL(18,2)))                        AS Pajamos,
+            SUM(CAST({quantity_col} AS DECIMAL(18,2)))                        AS Kiekis
+        FROM sales
+        WHERE {year_col} IS NOT NULL
+          AND {month_col} IS NOT NULL
+          AND {where_sql}
+        GROUP BY
+            {segment_expr}
+        """
     )
 
-    if turnover_sum != 0:
-        margin_from_totals = (profit_sum / turnover_sum) * 100.0
-        assert not np.isnan(margin_from_totals), "Margin calculation resulted in NaN"
+    stmt = _add_expanding_params(stmt, params)
 
+    with engine.connect() as conn:
+        df = pd.read_sql(stmt, conn, params=params)
+
+    if df.empty:
+        empty = df.assign(
+            **{
+                "MARŽA %": pd.Series(dtype="float32"),
+                "VPK": pd.Series(dtype="float32"),
+                "VPP": pd.Series(dtype="float32"),
+            }
+        )
+        _cache_set(_customer_segment_cache, cache_key, empty)
+        return empty
+
+    df["Segmentas"] = df["Segmentas"].fillna("Nepriskirta")
+    for col in ["Apyvarta", "Pajamos", "Kiekis"]:
+        df[col] = pd.to_numeric(df[col], errors="coerce").astype("float64")
+
+    df["MARŽA %"] = np.where(
+        df["Apyvarta"] != 0,
+        (df["Pajamos"] / df["Apyvarta"]) * 100.0,
+        np.nan,
+    ).astype("float32")
+
+    df["VPK"] = np.where(
+        df["Kiekis"] != 0,
+        df["Apyvarta"] / df["Kiekis"],
+        np.nan,
+    ).astype("float32")
+
+    df["VPP"] = np.where(
+        df["Kiekis"] != 0,
+        df["Pajamos"] / df["Kiekis"],
+        np.nan,
+    ).astype("float32")
+
+    _cache_set(_customer_segment_cache, cache_key, df)
+    return df
+
+
+def load_customer_client_keys(filters: Dict[str, Any]) -> pd.DataFrame:
+    """Load unique client identifiers for KPI distinct counts."""
+
+    year = int(filters.get("metai") or CUSTOMER_DEFAULT_YEAR)
+    years_window = sorted({y for y in range(year - 3, year + 1) if y > 0})
+
+    year_col = CUSTOMER_COLUMNS["year"]
+    month_col = CUSTOMER_COLUMNS["month"]
+    customer_expr = _coalesce_expr(CUSTOMER_COLUMNS["customer"], "Nežinomas klientas")
+    code_expr = _coalesce_expr(CUSTOMER_COLUMNS["customer_code"], "ND")
+
+    where_clauses, params = _build_customer_where_clauses(year_col, years_window, filters)
+    where_sql = "\n          AND ".join(where_clauses)
+
+    cache_key = _cache_key_from_filters("clients", {**filters, "years": tuple(years_window)})
+    cached = _cache_get(_customer_clients_cache, cache_key)
+    if cached is not None:
+        return cached
+
+    stmt = text(
+        f"""
+        SELECT
+            CAST({year_col} AS UNSIGNED)                                     AS Metai,
+            {month_col}                                                      AS Menuo,
+            {customer_expr}                                                  AS Klientas,
+            {code_expr}                                                      AS KlientoKodas
+        FROM sales
+        WHERE {year_col} IS NOT NULL
+          AND {month_col} IS NOT NULL
+          AND {where_sql}
+        GROUP BY
+            CAST({year_col} AS UNSIGNED),
+            {month_col},
+            {customer_expr},
+            {code_expr}
+        """
+    )
+
+    stmt = _add_expanding_params(stmt, params)
+
+    with engine.connect() as conn:
+        df = pd.read_sql(stmt, conn, params=params)
+
+    if df.empty:
+        _cache_set(_customer_clients_cache, cache_key, df)
+        return df
+
+    df["Metai"] = pd.to_numeric(df["Metai"], errors="coerce").astype("int16")
+    df["Menuo"] = pd.Categorical(df["Menuo"].astype(str), categories=MENUO_TVARKA, ordered=True)
+    df["Klientas"] = df["Klientas"].fillna("Nežinomas klientas")
+    df["KlientoKodas"] = df["KlientoKodas"].fillna("ND").astype(str)
+    df.rename(columns={"KlientoKodas": "Kliento kodas"}, inplace=True)
+
+    _cache_set(_customer_clients_cache, cache_key, df)
+    return df
+
+
+def load_customer_history_df(filters: Dict[str, Any]) -> pd.DataFrame:
+    """Load detailed customer history only when a specific client is selected."""
+
+    if not (filters.get("klientas") or filters.get("kliento_kodas")):
+        return pd.DataFrame(
+            columns=[
+                "Metai",
+                "Menuo",
+                "Klientas",
+                "Kliento kodas",
+                "Apyvarta",
+                "Pajamos",
+                "Kiekis",
+                "MARŽA %",
+                "VPK",
+                "VPP",
+            ]
+        )
+
+    year = int(filters.get("metai") or CUSTOMER_DEFAULT_YEAR)
+    years_window = sorted({y for y in range(year - 3, year + 1) if y > 0})
+
+    year_col = CUSTOMER_COLUMNS["year"]
+    month_col = CUSTOMER_COLUMNS["month"]
+    customer_expr = _coalesce_expr(CUSTOMER_COLUMNS["customer"], "Nežinomas klientas")
+    code_expr = _coalesce_expr(CUSTOMER_COLUMNS["customer_code"], "ND")
+    turnover_col = CUSTOMER_COLUMNS["turnover"]
+    profit_col = CUSTOMER_COLUMNS["profit"]
+    quantity_col = CUSTOMER_COLUMNS["quantity"]
+
+    where_clauses, params = _build_customer_where_clauses(year_col, years_window, filters)
+    where_sql = "\n          AND ".join(where_clauses)
+
+    cache_key = _cache_key_from_filters("history", {**filters, "years": tuple(years_window)})
+    cached = _cache_get(_customer_history_cache, cache_key)
+    if cached is not None:
+        return cached
+
+    stmt = text(
+        f"""
+        SELECT
+            CAST({year_col} AS UNSIGNED)                                     AS Metai,
+            {month_col}                                                      AS Menuo,
+            {customer_expr}                                                  AS Klientas,
+            {code_expr}                                                      AS KlientoKodas,
+            SUM(CAST({turnover_col} AS DECIMAL(18,2)))                        AS Apyvarta,
+            SUM(CAST({profit_col}   AS DECIMAL(18,2)))                        AS Pajamos,
+            SUM(CAST({quantity_col} AS DECIMAL(18,2)))                        AS Kiekis
+        FROM sales
+        WHERE {year_col} IS NOT NULL
+          AND {month_col} IS NOT NULL
+          AND {where_sql}
+        GROUP BY
+            CAST({year_col} AS UNSIGNED),
+            {month_col},
+            {customer_expr},
+            {code_expr}
+        """
+    )
+
+    stmt = _add_expanding_params(stmt, params)
+
+    with engine.connect() as conn:
+        df = pd.read_sql(stmt, conn, params=params)
+
+    if df.empty:
+        empty = df.assign(
+            **{
+                "MARŽA %": pd.Series(dtype="float32"),
+                "VPK": pd.Series(dtype="float32"),
+                "VPP": pd.Series(dtype="float32"),
+            }
+        )
+        _cache_set(_customer_history_cache, cache_key, empty)
+        return empty
+
+    df["Metai"] = pd.to_numeric(df["Metai"], errors="coerce").astype("int16")
+    df["Menuo"] = pd.Categorical(df["Menuo"].astype(str), categories=MENUO_TVARKA, ordered=True)
+    df["Klientas"] = df["Klientas"].fillna("Nežinomas klientas")
+    df["KlientoKodas"] = df["KlientoKodas"].fillna("ND").astype(str)
+
+    for col in ["Apyvarta", "Pajamos", "Kiekis"]:
+        df[col] = pd.to_numeric(df[col], errors="coerce").astype("float64")
+
+    df.rename(columns={"KlientoKodas": "Kliento kodas"}, inplace=True)
+
+    df["MARŽA %"] = np.where(
+        df["Apyvarta"] != 0,
+        (df["Pajamos"] / df["Apyvarta"]) * 100.0,
+        np.nan,
+    ).astype("float32")
+
+    df["VPK"] = np.where(
+        df["Kiekis"] != 0,
+        df["Apyvarta"] / df["Kiekis"],
+        np.nan,
+    ).astype("float32")
+
+    df["VPP"] = np.where(
+        df["Kiekis"] != 0,
+        df["Pajamos"] / df["Kiekis"],
+        np.nan,
+    ).astype("float32")
+
+    _cache_set(_customer_history_cache, cache_key, df)
     return df
 
 
@@ -520,12 +817,6 @@ def _aggregate_metric(
         return float((turnover / quantity)) if quantity else float("nan")
     if metric == "VPP":
         return float((profit / quantity)) if quantity else float("nan")
-    if metric == "Klientai":
-        distinct = subset[["Klientas", "Kliento kodas"]].drop_duplicates()
-        count = float(len(distinct))
-        assert count == float(len(distinct)), "Distinct client count mismatch"
-        return count
-
     raise ValueError(f"Nežinomas matas: {metric}")
 
 
@@ -544,10 +835,34 @@ def _format_value(metric: str, value: float) -> str:
     return f"{value:.2f}"
 
 
+def _aggregate_distinct_clients(
+    client_df: Optional[pd.DataFrame],
+    year: int,
+    months: Optional[Sequence[str]],
+) -> float:
+    """Compute distinct client count for the provided year and month window."""
+
+    if client_df is None or client_df.empty:
+        return float("nan")
+
+    subset = client_df[client_df["Metai"] == year]
+    if months:
+        subset = subset[subset["Menuo"].astype(str).isin(months)]
+
+    if subset.empty:
+        return float("nan")
+
+    distinct = subset[["Klientas", "Kliento kodas"]].drop_duplicates()
+    count = float(len(distinct))
+    assert count == float(len(distinct)), "Distinct client count mismatch"
+    return count
+
+
 def compute_kpis(
     df: pd.DataFrame,
     year: int,
     months_filter: Optional[Sequence[str]],
+    client_keys: Optional[pd.DataFrame] = None,
 ) -> List[Dict[str, Any]]:
     """Calculate KPI card values together with YoY deltas."""
 
@@ -557,8 +872,14 @@ def compute_kpis(
     results: List[Dict[str, Any]] = []
 
     for metric in CUSTOMER_METRIC_OPTIONS + ["Klientai"]:
-        current_val = _aggregate_metric(df, year, months, metric)
-        prev_val = _aggregate_metric(df, prev_year, months, metric) if months else float("nan")
+        if metric == "Klientai":
+            current_val = _aggregate_distinct_clients(client_keys, year, months)
+            prev_val = (
+                _aggregate_distinct_clients(client_keys, prev_year, months) if months else float("nan")
+            )
+        else:
+            current_val = _aggregate_metric(df, year, months, metric)
+            prev_val = _aggregate_metric(df, prev_year, months, metric) if months else float("nan")
 
         if metric == "Marža %":
             yoy_unit = "pp"
@@ -594,8 +915,17 @@ def compute_kpis(
         if not pd.isna(margin_total) and not pd.isna(sums_margin):
             assert abs(margin_total - sums_margin) < 1e-6, "Margin % must be computed from sums"
 
-        distinct_clients = subset[["Klientas", "Kliento kodas"]].drop_duplicates()
-        assert len(distinct_clients) == int(round(results[-1]["value"] or 0)), "Distinct client mismatch"
+        if client_keys is not None and not client_keys.empty:
+            clients_subset = client_keys[client_keys["Metai"] == year]
+            if months:
+                clients_subset = clients_subset[
+                    clients_subset["Menuo"].astype(str).isin(months)
+                ]
+            distinct_clients = float(
+                len(clients_subset[["Klientas", "Kliento kodas"]].drop_duplicates())
+            )
+            expected = float(results[-1]["value"] or 0)
+            assert int(round(distinct_clients)) == int(round(expected)), "Distinct client mismatch"
 
     return results
 
@@ -663,20 +993,59 @@ def build_client_matrix(
         {"name": str(i), "id": str(i)} for i in range(1, 13)
     ]
 
-    if df.empty:
+    if df.empty or not years:
         return columns, []
+
+    subset = df[df["Metai"].isin(years)].copy()
+    if subset.empty:
+        return columns, []
+
+    grouped = (
+        subset.groupby(["Metai", "Menuo"], as_index=False)[["Apyvarta", "Pajamos", "Kiekis"]].sum()
+    )
+
+    grouped["MARŽA %"] = np.where(
+        grouped["Apyvarta"] != 0,
+        (grouped["Pajamos"] / grouped["Apyvarta"]) * 100.0,
+        np.nan,
+    )
+    grouped["VPK"] = np.where(
+        grouped["Kiekis"] != 0,
+        grouped["Apyvarta"] / grouped["Kiekis"],
+        np.nan,
+    )
+    grouped["VPP"] = np.where(
+        grouped["Kiekis"] != 0,
+        grouped["Pajamos"] / grouped["Kiekis"],
+        np.nan,
+    )
+
+    metric_column = {
+        "Apyvarta": "Apyvarta",
+        "Pajamos": "Pajamos",
+        "Kiekis": "Kiekis",
+        "Marža %": "MARŽA %",
+        "VPK": "VPK",
+        "VPP": "VPP",
+    }[metric]
+
+    grouped["Menuo"] = grouped["Menuo"].astype(str)
 
     data_rows: List[Dict[str, Any]] = []
 
     for year in years:
-        subset = df[df["Metai"] == year]
-        if subset.empty:
+        year_slice = grouped[grouped["Metai"] == year]
+        if year_slice.empty:
             continue
+
+        values_map = {
+            MONTH_ORDER.get(row["Menuo"], 0): row[metric_column]
+            for _, row in year_slice.iterrows()
+        }
 
         row = {"Metai": int(year)}
         for idx, month_code in enumerate(MENUO_TVARKA, start=1):
-            month_slice = subset[subset["Menuo"].astype(str) == month_code]
-            value = _aggregate_metric(month_slice, year, None, metric) if not month_slice.empty else float("nan")
+            value = values_map.get(idx, np.nan)
             row[str(idx)] = _format_value(metric, value) if not pd.isna(value) else ""
         data_rows.append(row)
 

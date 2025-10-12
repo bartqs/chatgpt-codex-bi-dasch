@@ -378,7 +378,14 @@ def load_customer_overview_df(filters: Dict[str, Any]) -> pd.DataFrame:
         WHERE {year_col} IS NOT NULL
           AND {month_col} IS NOT NULL
           AND {where_sql}
-        GROUP BY Metai, Menuo, Filialas, Segmentas, Kategorija, Klientas, KlientoKodas
+        GROUP BY
+            CAST({year_col} AS UNSIGNED),
+            {month_col},
+            {branch_expr},
+            {segment_expr},
+            {category_expr},
+            {customer_expr},
+            {code_expr}
         """
     )
 

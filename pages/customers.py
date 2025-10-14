@@ -43,36 +43,16 @@ if LATEST_YEAR:
     DEFAULT_YEARS = [y for y in YEAR_OPTIONS if LATEST_YEAR - 3 <= y <= LATEST_YEAR]
     DEFAULT_YEARS = sorted(DEFAULT_YEARS) or [LATEST_YEAR]
 
-YOY_COLUMN_IDS = []
-if YEAR_OPTIONS:
-    sorted_years = sorted(YEAR_OPTIONS)
-    base_year = sorted_years[0]
-    YOY_COLUMN_IDS = [f"YoY_{int(year)}" for year in sorted_years if int(year) > base_year]
-
-YOY_STYLE_RULES = []
-for yoy_id in YOY_COLUMN_IDS:
-    YOY_STYLE_RULES.extend(
-        [
-            {
-                "if": {"column_id": yoy_id, "filter_query": f"{{{yoy_id}}} contains '+'"},
-                "color": GREEN,
-                "fontWeight": "700",
-            },
-            {
-                "if": {"column_id": yoy_id, "filter_query": f"{{{yoy_id}}} contains '-'"},
-                "color": RED,
-                "fontWeight": "700",
-            },
-        ]
-    )
-
-
 METRIC_COLUMN_MAP = {
     "APYVARTA": "Apyvarta",
     "PAJAMOS": "Pajamos",
     "KIEKIS": "Kiekis",
     "MARŽA %": "MARŽA %",
 }
+
+YOY_POS_BG = "rgba(46, 125, 50, 0.2)"
+YOY_NEG_BG = "rgba(227, 6, 19, 0.2)"
+YOY_NEUTRAL_BG = "rgba(120, 120, 120, 0.16)"
 
 
 BASE_TABLE_STYLE = {
@@ -313,6 +293,7 @@ def layout():
                     "borderRadius": "10px",
                     "minWidth": "100%",
                 },
+                dangerously_allow_html=True,
                 style_header={
                     "backgroundColor": IC_NAVY,
                     "color": IC_WHITE,
@@ -337,8 +318,7 @@ def layout():
                         "fontWeight": "700",
                     },
                     {"if": {"column_id": "Mėnuo"}, "textAlign": "left"},
-                ]
-                + YOY_STYLE_RULES,
+                ],
             ),
             dcc.Download(id="customer-export-download"),
         ],
@@ -391,13 +371,106 @@ def _calculate_yoy_percent(current, previous):
     return ((current - previous) / previous) * 100.0
 
 
-def _format_yoy(value):
+def _format_yoy_percent(metric: str, value):
     if value is None or pd.isna(value):
-        return ""
-    if abs(float(value)) < 1e-9:
-        return "0.00 %"
+        return "–"
+    if metric == "MARŽA %":
+        sign = "+" if value > 0 else ""
+        return f"{sign}{float(value):.2f} p.p."
     sign = "+" if value > 0 else ""
     return f"{sign}{float(value):.2f} %"
+
+
+def _format_yoy_diff(metric: str, value):
+    if value is None or pd.isna(value):
+        return "–"
+    if metric in ("APYVARTA", "PAJAMOS"):
+        return _fmt_eur(value)
+    if metric == "KIEKIS":
+        return _fmt_qty(value)
+    if metric == "MARŽA %":
+        return "–"
+    sign = "+" if value > 0 else ""
+    return f"{sign}{float(value):.2f} p.p."
+
+
+def _get_yoy_color(yoy_value):
+    if yoy_value is None or pd.isna(yoy_value):
+        return IC_GRAY
+    if yoy_value > 0:
+        return GREEN
+    if yoy_value < 0:
+        return RED
+    return IC_GRAY
+
+
+def _yoy_background(yoy_value):
+    if yoy_value is None or pd.isna(yoy_value):
+        return YOY_NEUTRAL_BG, 0
+    color = YOY_POS_BG if yoy_value > 0 else YOY_NEG_BG if yoy_value < 0 else YOY_NEUTRAL_BG
+    width = min(abs(float(yoy_value)), 100.0)
+    return color, width
+
+
+def _build_cell_html(metric, value, yoy_pct, yoy_diff, has_baseline, is_latest):
+    value_text = _format_table_value(metric, value)
+    if not has_baseline or yoy_pct is None or pd.isna(yoy_pct):
+        emphasize = "font-weight:700;" if is_latest else ""
+        return (
+            f"<div style='position:relative;padding:6px;display:flex;flex-direction:column;"
+            f"align-items:flex-end;{emphasize}'>"
+            f"<span>{value_text or '–'}</span>"
+            "</div>"
+        )
+
+    pct_text = _format_yoy_percent(metric, yoy_pct)
+    diff_text = _format_yoy_diff(metric, yoy_diff)
+    yoy_color = _get_yoy_color(yoy_pct)
+    bar_color, width = _yoy_background(yoy_pct)
+    emphasize = "font-weight:700;" if is_latest else ""
+    hover_title = (
+        f"YoY: {pct_text} | Δ {diff_text}"
+    )
+    if diff_text == "–":
+        hover_title = f"YoY: {pct_text}"
+
+    bar_style = (
+        "position:absolute;inset:4px;border-radius:8px;"
+        f"background:linear-gradient(90deg,{bar_color} {width}%, rgba(0,0,0,0) {width}%);"
+        + ("opacity:1;" if is_latest else "opacity:0.75;")
+    )
+    if yoy_pct < 0:
+        bar_style = (
+            "position:absolute;inset:4px;border-radius:8px;"
+            f"background:linear-gradient(270deg,{bar_color} {width}%, rgba(0,0,0,0) {width}%);"
+            + ("opacity:1;" if is_latest else "opacity:0.75;")
+        )
+
+    return (
+        "<div style='position:relative;padding:4px 6px;border-radius:8px;"
+        "overflow:hidden;min-height:48px;' title='"
+        + hover_title
+        + "'>"
+        + f"<div style='{bar_style}'></div>"
+        + "<div style='position:relative;display:flex;flex-direction:column;align-items:flex-end;"
+        f"gap:2px;color:{IC_NAVY};{emphasize}'>"
+        + f"<span>{value_text or '–'}</span>"
+        + f"<span style='font-size:11px;color:{yoy_color};font-weight:600;'>"
+        + f"{pct_text}"
+        + (" | " + diff_text if diff_text != "–" else "")
+        + "</span></div></div>"
+    )
+
+
+def _format_hover_yoy(metric, yoy_pct, yoy_diff):
+    if yoy_pct is None or pd.isna(yoy_pct):
+        return "–", IC_GRAY
+    pct_text = _format_yoy_percent(metric, yoy_pct)
+    diff_text = _format_yoy_diff(metric, yoy_diff)
+    text = pct_text
+    if diff_text != "–":
+        text = f"{pct_text} | {diff_text}"
+    return text, _get_yoy_color(yoy_pct)
 
 
 def _build_status_text(managers, clients, codes, years, metric):
@@ -583,17 +656,58 @@ def update_customer_view(managers, clients, codes, years, metric, chart_type):
     tickvals = month_range
     ticktext = [MENUO_LABELS_LT[i - 1] if 1 <= i <= 12 else str(i) for i in month_range]
 
+    yoy_percent_map = {year: {} for year in years_sorted}
+    yoy_diff_map = {year: {} for year in years_sorted}
+    for year in years_sorted:
+        prev_year = year - 1
+        if prev_year not in years_set:
+            continue
+        comparable_months = months_by_year.get(year, set()) & months_by_year.get(prev_year, set())
+        for month in comparable_months:
+            current_val = month_values.get(year, {}).get(month)
+            prev_val = month_values.get(prev_year, {}).get(month)
+            if metric == "MARŽA %":
+                if current_val is None or prev_val is None:
+                    continue
+                diff_val = current_val - prev_val
+                yoy_percent_map[year][month] = diff_val
+                yoy_diff_map[year][month] = diff_val
+            else:
+                if current_val is None or prev_val is None:
+                    continue
+                yoy_pct = _calculate_yoy_percent(current_val, prev_val)
+                if yoy_pct is None:
+                    continue
+                yoy_percent_map[year][month] = yoy_pct
+                yoy_diff_map[year][month] = current_val - prev_val
+
     fig = go.Figure()
     for year in years_sorted:
         df_year = aggregated[aggregated["Metai"] == year].sort_values("Mėnuo")
         color = IC_RED if year == latest_year else CUSTOMER_COLORWAY.get(year, IC_GRAY)
-        month_numbers = df_year["Mėnuo"].tolist()
+        month_numbers = df_year["Mėnuo"].astype(int).tolist()
         month_labels = [
             MENUO_LABELS_LT[int(m) - 1] if isinstance(m, (int, float)) and 1 <= int(m) <= 12 else str(m)
             for m in month_numbers
         ]
         formatted_values = [_format_table_value(metric, v) for v in df_year[metric_col]]
-        customdata = list(zip(month_labels, formatted_values))
+
+        if year == latest_year:
+            customdata = []
+            for m, label, fval in zip(month_numbers, month_labels, formatted_values):
+                yoy_pct = yoy_percent_map.get(year, {}).get(int(m))
+                yoy_diff = yoy_diff_map.get(year, {}).get(int(m))
+                yoy_text, yoy_color = _format_hover_yoy(metric, yoy_pct, yoy_diff)
+                customdata.append((label, fval, yoy_text, yoy_color))
+            hovertemplate = (
+                "Mėnuo %{customdata[0]}<br>Metai %{name}<br>Reikšmė %{customdata[1]}"
+                "<br><span style='color:%{customdata[3]};'>YoY %{customdata[2]}</span><extra></extra>"
+            )
+        else:
+            customdata = list(zip(month_labels, formatted_values))
+            hovertemplate = (
+                "Mėnuo %{customdata[0]}<br>Metai %{name}<br>Reikšmė %{customdata[1]}<extra></extra>"
+            )
 
         if chart_type == "bar":
             fig.add_trace(
@@ -603,12 +717,10 @@ def update_customer_view(managers, clients, codes, years, metric, chart_type):
                     name=str(year),
                     marker={
                         "color": color,
-                        "opacity": 0.9 if year == latest_year else 0.75,
-                        "line": {"color": color, "width": 1.2 if year == latest_year else 0.6},
+                        "opacity": 0.92 if year == latest_year else 0.75,
+                        "line": {"color": color, "width": 1.4 if year == latest_year else 0.6},
                     },
-                    hovertemplate=(
-                        "Mėnuo %{customdata[0]}<br>Metai %{name}<br>Reikšmė %{customdata[1]}<extra></extra>"
-                    ),
+                    hovertemplate=hovertemplate,
                     customdata=customdata,
                     offsetgroup=str(year),
                     legendgroup=str(year),
@@ -622,10 +734,8 @@ def update_customer_view(managers, clients, codes, years, metric, chart_type):
                     mode="lines+markers",
                     name=str(year),
                     line={"color": color, "width": 4 if year == latest_year else 2},
-                    marker={"size": 8 if year == latest_year else 6},
-                    hovertemplate=(
-                        "Mėnuo %{customdata[0]}<br>Metai %{name}<br>Reikšmė %{customdata[1]}<extra></extra>"
-                    ),
+                    marker={"size": 9 if year == latest_year else 6},
+                    hovertemplate=hovertemplate,
                     customdata=customdata,
                     legendgroup=str(year),
                 )
@@ -655,7 +765,6 @@ def update_customer_view(managers, clients, codes, years, metric, chart_type):
     if chart_type == "bar":
         fig.update_layout(barmode="group", bargap=0.2)
 
-    # Build table with interleaved YoY columns
     columns = [{"name": "Mėnuo", "id": "Mėnuo"}]
     columns_order = ["Mėnuo"]
 
@@ -665,46 +774,34 @@ def update_customer_view(managers, clients, codes, years, metric, chart_type):
         for year in years_sorted:
             year_key = str(year)
             raw_value = month_values.get(year, {}).get(month)
-            display_value = raw_value
-            if display_value is None:
-                display_value = 0.0
-            row[year_key] = display_value
-
-            prev_year = year - 1
-            if year != latest_year and prev_year in years_set:
-                yoy_id = f"YoY_{year}"
-                months_curr = months_by_year.get(year, set())
-                months_prev = months_by_year.get(prev_year, set())
-                yoy_value = None
-                if month in months_curr and month in months_prev:
-                    current_val = month_values.get(year, {}).get(month)
-                    prev_val = month_values.get(prev_year, {}).get(month)
-                    if metric != "MARŽA %":
-                        current_val = current_val if current_val is not None else 0.0
-                        prev_val = prev_val if prev_val is not None else 0.0
-                    yoy_value = _calculate_yoy_percent(current_val, prev_val)
-                row[yoy_id] = yoy_value
-
+            if raw_value is None:
+                row[year_key] = 0.0 if metric != "MARŽA %" else 0.0
+            else:
+                row[year_key] = raw_value
         month_rows_numeric.append(row)
 
     sum_row = {"Mėnuo": "suma"}
+    yoy_total_percent = {}
+    yoy_total_diff = {}
     for year in years_sorted:
         year_key = str(year)
         months_curr = months_by_year.get(year, set())
         if metric == "MARŽA %":
             turnover_total = sum(turnover_map.get(year, {}).get(m, 0.0) for m in months_curr)
             profit_total = sum(profit_map.get(year, {}).get(m, 0.0) for m in months_curr)
-            total_value = (profit_total / turnover_total * 100.0) if turnover_total else 0.0
+            total_value = (profit_total / turnover_total * 100.0) if turnover_total else None
         else:
             total_value = sum(
                 (month_values.get(year, {}).get(m) if month_values.get(year, {}).get(m) is not None else 0.0)
                 for m in months_curr
             )
-        sum_row[year_key] = total_value
+        sum_row[year_key] = total_value if total_value is not None else 0.0
 
         prev_year = year - 1
-        if year != latest_year and prev_year in years_set:
-            yoy_id = f"YoY_{year}"
+        has_baseline = prev_year in years_set
+        yoy_total = None
+        yoy_diff_total = None
+        if has_baseline:
             comparable_months = months_by_year.get(year, set()) & months_by_year.get(prev_year, set())
             if comparable_months:
                 if metric == "MARŽA %":
@@ -714,7 +811,9 @@ def update_customer_view(managers, clients, codes, years, metric, chart_type):
                     prev_profit = sum(profit_map.get(prev_year, {}).get(m, 0.0) for m in comparable_months)
                     curr_metric = (curr_profit / curr_turnover * 100.0) if curr_turnover else None
                     prev_metric = (prev_profit / prev_turnover * 100.0) if prev_turnover else None
-                    yoy_total = _calculate_yoy_percent(curr_metric, prev_metric)
+                    if curr_metric is not None and prev_metric is not None:
+                        yoy_total = curr_metric - prev_metric
+                        yoy_diff_total = curr_metric - prev_metric
                 else:
                     curr_metric = sum(
                         (month_values.get(year, {}).get(m) if month_values.get(year, {}).get(m) is not None else 0.0)
@@ -725,55 +824,51 @@ def update_customer_view(managers, clients, codes, years, metric, chart_type):
                         for m in comparable_months
                     )
                     yoy_total = _calculate_yoy_percent(curr_metric, prev_metric)
-            else:
-                yoy_total = None
-            sum_row[yoy_id] = yoy_total
+                    if yoy_total is not None:
+                        yoy_diff_total = curr_metric - prev_metric
+        yoy_total_percent[year] = yoy_total
+        yoy_total_diff[year] = yoy_diff_total
 
     numeric_rows = month_rows_numeric + [sum_row]
 
     for year in years_sorted:
         year_key = str(year)
-        prev_year = year - 1
-        if year != latest_year and prev_year in years_set:
-            yoy_id = f"YoY_{year}"
-            if yoy_id not in sum_row:
-                sum_row[yoy_id] = None
-            columns.append({"name": f"YoY ({year} vs {prev_year})", "id": yoy_id})
-            columns_order.append(yoy_id)
         columns.append({"name": str(year), "id": year_key})
         columns_order.append(year_key)
 
     data_formatted = []
     for row in numeric_rows:
         formatted = {}
-        for key in columns_order:
-            if key == "Mėnuo":
-                formatted[key] = row.get(key, "")
-            elif key.startswith("YoY_"):
-                formatted[key] = _format_yoy(row.get(key))
+        is_total = row["Mėnuo"] == "suma"
+        formatted["Mėnuo"] = row["Mėnuo"]
+        for year in years_sorted:
+            year_key = str(year)
+            has_baseline = (year - 1) in years_set
+            is_latest = year == latest_year
+            if is_total:
+                yoy_pct = yoy_total_percent.get(year)
+                yoy_diff = yoy_total_diff.get(year)
             else:
-                formatted[key] = _format_table_value(metric, row.get(key))
+                month_idx = int(row["Mėnuo"])
+                yoy_pct = yoy_percent_map.get(year, {}).get(month_idx)
+                yoy_diff = yoy_diff_map.get(year, {}).get(month_idx)
+            value = row.get(year_key)
+            formatted[year_key] = _build_cell_html(metric, value, yoy_pct, yoy_diff, has_baseline, is_latest)
         data_formatted.append(formatted)
 
     years_count = len(years_sorted)
     table_style_props["overflowX"] = "auto" if years_count > 4 else "hidden"
-    cell_style["padding"] = "6px 8px" if years_count <= 4 else "4px 6px"
+    cell_style["padding"] = "6px 10px" if years_count <= 4 else "4px 6px"
 
-    numeric_columns = [cid for cid in columns_order if cid not in ("Mėnuo",) and not cid.startswith("YoY_")]
-    yoy_columns = [cid for cid in columns_order if cid.startswith("YoY_")]
-
+    numeric_columns = [cid for cid in columns_order if cid != "Mėnuo"]
     if years_count >= 5:
-        numeric_width = "80px"
-        yoy_width = "85px"
+        numeric_width = "140px"
     elif years_count == 4:
-        numeric_width = "90px"
-        yoy_width = "95px"
+        numeric_width = "130px"
     elif years_count == 3:
-        numeric_width = "100px"
-        yoy_width = "100px"
+        numeric_width = "120px"
     else:
         numeric_width = "110px"
-        yoy_width = "105px"
 
     cell_conditional = [dict(item) for item in BASE_CELL_CONDITIONAL]
     for col_id in numeric_columns:
@@ -785,20 +880,16 @@ def update_customer_view(managers, clients, codes, years, metric, chart_type):
                 "maxWidth": numeric_width,
             }
         )
-    for col_id in yoy_columns:
-        cell_conditional.append(
-            {
-                "if": {"column_id": col_id},
-                "minWidth": yoy_width,
-                "width": yoy_width,
-                "maxWidth": yoy_width,
-            }
-        )
+    cell_conditional.append(
+        {
+            "if": {"column_id": str(latest_year)},
+            "fontWeight": "700",
+        }
+    )
 
     month_width = 110
-    numeric_px = int(numeric_width.replace("px", "")) if numeric_width.endswith("px") else 100
-    yoy_px = int(yoy_width.replace("px", "")) if yoy_width.endswith("px") else 90
-    total_px = month_width + numeric_px * len(numeric_columns) + yoy_px * len(yoy_columns)
+    numeric_px = int(numeric_width.replace("px", "")) if numeric_width.endswith("px") else 120
+    total_px = month_width + numeric_px * len(numeric_columns)
     table_style_props["minWidth"] = f"{total_px + 40}px" if years_count > 4 else "100%"
 
     return (

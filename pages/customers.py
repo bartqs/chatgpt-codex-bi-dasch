@@ -75,6 +75,32 @@ METRIC_COLUMN_MAP = {
 }
 
 
+BASE_TABLE_STYLE = {
+    "overflowX": "hidden",
+    "border": f"1px solid {IC_GRAY}",
+    "borderRadius": "10px",
+    "minWidth": "100%",
+}
+
+BASE_CELL_STYLE = {
+    "padding": "6px 10px",
+    "fontFamily": "Arial",
+    "fontSize": "13px",
+    "textAlign": "right",
+    "whiteSpace": "nowrap",
+}
+
+BASE_CELL_CONDITIONAL = [
+    {
+        "if": {"column_id": "Mėnuo"},
+        "textAlign": "left",
+        "minWidth": "90px",
+        "width": "90px",
+        "maxWidth": "110px",
+    }
+]
+
+
 EMPTY_MESSAGE = html.Div(
     [
         html.Div("🧩", style={"fontSize": "36px", "marginBottom": "12px"}),
@@ -282,22 +308,27 @@ def layout():
                 columns=[],
                 data=[],
                 style_table={
-                    "overflowX": "auto",
+                    "overflowX": "hidden",
                     "border": f"1px solid {IC_GRAY}",
                     "borderRadius": "10px",
+                    "minWidth": "100%",
                 },
                 style_header={
                     "backgroundColor": IC_NAVY,
                     "color": IC_WHITE,
                     "fontWeight": 700,
                     "textAlign": "center",
+                    "padding": "6px 8px",
                 },
                 style_cell={
                     "padding": "6px 10px",
                     "fontFamily": "Arial",
                     "fontSize": "13px",
                     "textAlign": "right",
+                    "whiteSpace": "nowrap",
                 },
+                style_cell_conditional=[],
+                fixed_columns={"headers": True, "data": 1},
                 style_data_conditional=[
                     {"if": {"row_index": "odd"}, "backgroundColor": "#F7F9FC"},
                     {
@@ -433,6 +464,9 @@ def reset_filters(n_clicks):
     Output("customer-chart", "figure"),
     Output("customer-table", "columns"),
     Output("customer-table", "data"),
+    Output("customer-table", "style_table"),
+    Output("customer-table", "style_cell"),
+    Output("customer-table", "style_cell_conditional"),
     Output("customer-empty", "children"),
     Output("customer-empty", "style"),
     Output("customer-chart-wrapper", "style"),
@@ -474,9 +508,25 @@ def update_customer_view(managers, clients, codes, years, metric, chart_type):
         "margin": "0 16px 24px",
     }
 
+    table_style_props = dict(BASE_TABLE_STYLE)
+    cell_style = dict(BASE_CELL_STYLE)
+    cell_conditional = [dict(item) for item in BASE_CELL_CONDITIONAL]
+
     selected_clients = clients if isinstance(clients, list) else (clients or [])
     if not selected_clients or len(selected_clients) != 1:
-        return go.Figure(), [], [], empty_children, empty_style, hidden, hidden, status_text
+        return (
+            go.Figure(),
+            [],
+            [],
+            table_style_props,
+            cell_style,
+            cell_conditional,
+            empty_children,
+            empty_style,
+            hidden,
+            hidden,
+            status_text,
+        )
 
     chart_type = chart_type or "line"
 
@@ -489,7 +539,19 @@ def update_customer_view(managers, clients, codes, years, metric, chart_type):
 
     aggregated, _ = compute_customer_monthly_aggregation(filters, metric)
     if aggregated.empty:
-        return go.Figure(), [], [], NO_DATA_MESSAGE, empty_style, hidden, hidden, status_text
+        return (
+            go.Figure(),
+            [],
+            [],
+            table_style_props,
+            cell_style,
+            cell_conditional,
+            NO_DATA_MESSAGE,
+            empty_style,
+            hidden,
+            hidden,
+            status_text,
+        )
 
     metric_col = METRIC_COLUMN_MAP[metric]
     aggregated = aggregated.sort_values(["Mėnuo", "Metai"], kind="mergesort")
@@ -609,7 +671,7 @@ def update_customer_view(managers, clients, codes, years, metric, chart_type):
             row[year_key] = display_value
 
             prev_year = year - 1
-            if prev_year in years_set:
+            if year != latest_year and prev_year in years_set:
                 yoy_id = f"YoY_{year}"
                 months_curr = months_by_year.get(year, set())
                 months_prev = months_by_year.get(prev_year, set())
@@ -641,7 +703,7 @@ def update_customer_view(managers, clients, codes, years, metric, chart_type):
         sum_row[year_key] = total_value
 
         prev_year = year - 1
-        if prev_year in years_set:
+        if year != latest_year and prev_year in years_set:
             yoy_id = f"YoY_{year}"
             comparable_months = months_by_year.get(year, set()) & months_by_year.get(prev_year, set())
             if comparable_months:
@@ -672,11 +734,11 @@ def update_customer_view(managers, clients, codes, years, metric, chart_type):
     for year in years_sorted:
         year_key = str(year)
         prev_year = year - 1
-        if prev_year in years_set:
+        if year != latest_year and prev_year in years_set:
             yoy_id = f"YoY_{year}"
             if yoy_id not in sum_row:
                 sum_row[yoy_id] = None
-            columns.append({"name": "YoY", "id": yoy_id})
+            columns.append({"name": f"YoY ({year} vs {prev_year})", "id": yoy_id})
             columns_order.append(yoy_id)
         columns.append({"name": str(year), "id": year_key})
         columns_order.append(year_key)
@@ -693,7 +755,65 @@ def update_customer_view(managers, clients, codes, years, metric, chart_type):
                 formatted[key] = _format_table_value(metric, row.get(key))
         data_formatted.append(formatted)
 
-    return fig, columns, data_formatted, empty_children, hidden, chart_style, table_style, status_text
+    years_count = len(years_sorted)
+    table_style_props["overflowX"] = "auto" if years_count > 4 else "hidden"
+    cell_style["padding"] = "6px 8px" if years_count <= 4 else "4px 6px"
+
+    numeric_columns = [cid for cid in columns_order if cid not in ("Mėnuo",) and not cid.startswith("YoY_")]
+    yoy_columns = [cid for cid in columns_order if cid.startswith("YoY_")]
+
+    if years_count >= 5:
+        numeric_width = "80px"
+        yoy_width = "85px"
+    elif years_count == 4:
+        numeric_width = "90px"
+        yoy_width = "95px"
+    elif years_count == 3:
+        numeric_width = "100px"
+        yoy_width = "100px"
+    else:
+        numeric_width = "110px"
+        yoy_width = "105px"
+
+    cell_conditional = [dict(item) for item in BASE_CELL_CONDITIONAL]
+    for col_id in numeric_columns:
+        cell_conditional.append(
+            {
+                "if": {"column_id": col_id},
+                "minWidth": numeric_width,
+                "width": numeric_width,
+                "maxWidth": numeric_width,
+            }
+        )
+    for col_id in yoy_columns:
+        cell_conditional.append(
+            {
+                "if": {"column_id": col_id},
+                "minWidth": yoy_width,
+                "width": yoy_width,
+                "maxWidth": yoy_width,
+            }
+        )
+
+    month_width = 110
+    numeric_px = int(numeric_width.replace("px", "")) if numeric_width.endswith("px") else 100
+    yoy_px = int(yoy_width.replace("px", "")) if yoy_width.endswith("px") else 90
+    total_px = month_width + numeric_px * len(numeric_columns) + yoy_px * len(yoy_columns)
+    table_style_props["minWidth"] = f"{total_px + 40}px" if years_count > 4 else "100%"
+
+    return (
+        fig,
+        columns,
+        data_formatted,
+        table_style_props,
+        cell_style,
+        cell_conditional,
+        empty_children,
+        hidden,
+        chart_style,
+        table_style,
+        status_text,
+    )
 
 
 @callback(

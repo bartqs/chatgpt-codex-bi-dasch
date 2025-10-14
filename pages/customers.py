@@ -293,7 +293,7 @@ def layout():
                     "borderRadius": "10px",
                     "minWidth": "100%",
                 },
-                dangerously_allow_html=True,
+                markdown_options={"html": True},
                 style_header={
                     "backgroundColor": IC_NAVY,
                     "color": IC_WHITE,
@@ -833,7 +833,7 @@ def update_customer_view(managers, clients, codes, years, metric, chart_type):
 
     for year in years_sorted:
         year_key = str(year)
-        columns.append({"name": str(year), "id": year_key})
+        columns.append({"name": str(year), "id": year_key, "presentation": "markdown"})
         columns_order.append(year_key)
 
     data_formatted = []

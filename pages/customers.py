@@ -6,12 +6,14 @@ import plotly.graph_objects as go
 from data.app_data import (
     CUSTOMER_COLORWAY,
     CUSTOMER_METRICS,
+    GREEN,
     IC_BG,
     IC_GRAY,
     IC_NAVY,
     IC_RED,
     IC_WHITE,
     MENUO_LABELS_LT,
+    RED,
     _fmt_eur,
     _fmt_pct,
     _fmt_qty,
@@ -40,6 +42,29 @@ DEFAULT_YEARS = []
 if LATEST_YEAR:
     DEFAULT_YEARS = [y for y in YEAR_OPTIONS if LATEST_YEAR - 3 <= y <= LATEST_YEAR]
     DEFAULT_YEARS = sorted(DEFAULT_YEARS) or [LATEST_YEAR]
+
+YOY_COLUMN_IDS = []
+if YEAR_OPTIONS:
+    sorted_years = sorted(YEAR_OPTIONS)
+    base_year = sorted_years[0]
+    YOY_COLUMN_IDS = [f"YoY_{int(year)}" for year in sorted_years if int(year) > base_year]
+
+YOY_STYLE_RULES = []
+for yoy_id in YOY_COLUMN_IDS:
+    YOY_STYLE_RULES.extend(
+        [
+            {
+                "if": {"column_id": yoy_id, "filter_query": f"{{{yoy_id}}} contains '+'"},
+                "color": GREEN,
+                "fontWeight": "700",
+            },
+            {
+                "if": {"column_id": yoy_id, "filter_query": f"{{{yoy_id}}} contains '-'"},
+                "color": RED,
+                "fontWeight": "700",
+            },
+        ]
+    )
 
 
 METRIC_COLUMN_MAP = {
@@ -180,13 +205,39 @@ def layout():
     chart_section = html.Div(
         [
             html.Div(
-                "Kliento rezultatų dinamika pagal metus",
-                style={"fontWeight": 700, "color": IC_NAVY, "marginBottom": "8px"},
+                [
+                    html.Div(
+                        "Kliento rezultatų dinamika pagal metus",
+                        style={"fontWeight": 700, "color": IC_NAVY},
+                    ),
+                    dcc.RadioItems(
+                        id="customer-chart-type",
+                        options=[
+                            {"label": "Linijinis", "value": "line"},
+                            {"label": "Stulpelinis", "value": "bar"},
+                        ],
+                        value="line",
+                        inline=True,
+                        labelStyle={
+                            "marginRight": "12px",
+                            "fontWeight": 600,
+                            "color": IC_NAVY,
+                        },
+                        inputStyle={"marginRight": "6px"},
+                        style={"marginLeft": "auto"},
+                    ),
+                ],
+                style={
+                    "display": "flex",
+                    "alignItems": "center",
+                    "gap": "12px",
+                    "marginBottom": "12px",
+                },
             ),
             dcc.Graph(
                 id="customer-chart",
                 config={"displaylogo": False},
-                style={"height": "420px"},
+                style={"height": "700px"},
             ),
         ],
         id="customer-chart-wrapper",
@@ -255,7 +306,8 @@ def layout():
                         "fontWeight": "700",
                     },
                     {"if": {"column_id": "Mėnuo"}, "textAlign": "left"},
-                ],
+                ]
+                + YOY_STYLE_RULES,
             ),
             dcc.Download(id="customer-export-download"),
         ],
@@ -298,6 +350,23 @@ def _format_table_value(metric: str, value):
     if metric == "KIEKIS":
         return _fmt_qty(value)
     return _fmt_pct(value)
+
+
+def _calculate_yoy_percent(current, previous):
+    if current is None or pd.isna(current):
+        return None
+    if previous is None or pd.isna(previous) or previous == 0:
+        return None
+    return ((current - previous) / previous) * 100.0
+
+
+def _format_yoy(value):
+    if value is None or pd.isna(value):
+        return ""
+    if abs(float(value)) < 1e-9:
+        return "0.00 %"
+    sign = "+" if value > 0 else ""
+    return f"{sign}{float(value):.2f} %"
 
 
 def _build_status_text(managers, clients, codes, years, metric):
@@ -374,8 +443,9 @@ def reset_filters(n_clicks):
     Input("customer-code", "value"),
     Input("customer-years", "value"),
     Input("customer-metric", "value"),
+    Input("customer-chart-type", "value"),
 )
-def update_customer_view(managers, clients, codes, years, metric):
+def update_customer_view(managers, clients, codes, years, metric, chart_type):
     status_text = _build_status_text(managers, clients, codes, years, metric)
     empty_children = EMPTY_MESSAGE
     empty_style = {
@@ -408,6 +478,8 @@ def update_customer_view(managers, clients, codes, years, metric):
     if not selected_clients or len(selected_clients) != 1:
         return go.Figure(), [], [], empty_children, empty_style, hidden, hidden, status_text
 
+    chart_type = chart_type or "line"
+
     filters = {
         "vadybininkas": managers if isinstance(managers, list) else (managers or []),
         "klientas": selected_clients,
@@ -415,50 +487,97 @@ def update_customer_view(managers, clients, codes, years, metric):
         "metai": years if isinstance(years, list) else (years or []),
     }
 
-    aggregated = compute_customer_monthly_aggregation(filters, metric)
+    aggregated, _ = compute_customer_monthly_aggregation(filters, metric)
     if aggregated.empty:
         return go.Figure(), [], [], NO_DATA_MESSAGE, empty_style, hidden, hidden, status_text
 
     metric_col = METRIC_COLUMN_MAP[metric]
-    months = sorted(aggregated["Mėnuo"].unique())
+    aggregated = aggregated.sort_values(["Mėnuo", "Metai"], kind="mergesort")
     years_sorted = sorted(aggregated["Metai"].unique())
     latest_year = max(years_sorted)
+    years_set = set(years_sorted)
+
+    months_by_year = {year: set() for year in years_sorted}
+    month_values = {year: {} for year in years_sorted}
+    turnover_map = {year: {} for year in years_sorted}
+    profit_map = {year: {} for year in years_sorted}
+
+    for _, row in aggregated.iterrows():
+        year = int(row["Metai"])
+        month = int(row["Mėnuo"])
+        months_by_year.setdefault(year, set()).add(month)
+
+        raw_value = row[metric_col]
+        if pd.isna(raw_value):
+            raw_value = None
+        else:
+            raw_value = float(raw_value)
+        month_values.setdefault(year, {})[month] = raw_value
+
+        turnover_map.setdefault(year, {})[month] = float(row["Apyvarta"]) if not pd.isna(row["Apyvarta"]) else 0.0
+        profit_map.setdefault(year, {})[month] = float(row["Pajamos"]) if not pd.isna(row["Pajamos"]) else 0.0
+
+    month_range = list(range(1, 13))
+    tickvals = month_range
+    ticktext = [MENUO_LABELS_LT[i - 1] if 1 <= i <= 12 else str(i) for i in month_range]
 
     fig = go.Figure()
-    ticks = months
-    ticktext = [MENUO_LABELS_LT[m - 1] if 1 <= m <= 12 else str(m) for m in ticks]
-
     for year in years_sorted:
-        df_year = aggregated[aggregated["Metai"] == year]
-        color = CUSTOMER_COLORWAY.get(year, IC_GRAY)
-        if year == latest_year:
-            color = IC_RED
+        df_year = aggregated[aggregated["Metai"] == year].sort_values("Mėnuo")
+        color = IC_RED if year == latest_year else CUSTOMER_COLORWAY.get(year, IC_GRAY)
+        month_numbers = df_year["Mėnuo"].tolist()
         month_labels = [
-            MENUO_LABELS_LT[m - 1] if isinstance(m, (int, float)) and 1 <= int(m) <= 12 else str(m)
-            for m in df_year["Mėnuo"]
+            MENUO_LABELS_LT[int(m) - 1] if isinstance(m, (int, float)) and 1 <= int(m) <= 12 else str(m)
+            for m in month_numbers
         ]
         formatted_values = [_format_table_value(metric, v) for v in df_year[metric_col]]
         customdata = list(zip(month_labels, formatted_values))
-        fig.add_trace(
-            go.Scatter(
-                x=df_year["Mėnuo"],
-                y=df_year[metric_col],
-                mode="lines+markers",
-                name=str(year),
-                line={"color": color, "width": 3},
-                hovertemplate="Mėnuo %{customdata[0]}<br>Metai %{name}<br>Reikšmė %{customdata[1]}<extra></extra>",
-                customdata=customdata,
+
+        if chart_type == "bar":
+            fig.add_trace(
+                go.Bar(
+                    x=month_numbers,
+                    y=df_year[metric_col].tolist(),
+                    name=str(year),
+                    marker={
+                        "color": color,
+                        "opacity": 0.9 if year == latest_year else 0.75,
+                        "line": {"color": color, "width": 1.2 if year == latest_year else 0.6},
+                    },
+                    hovertemplate=(
+                        "Mėnuo %{customdata[0]}<br>Metai %{name}<br>Reikšmė %{customdata[1]}<extra></extra>"
+                    ),
+                    customdata=customdata,
+                    offsetgroup=str(year),
+                    legendgroup=str(year),
+                )
             )
-        )
+        else:
+            fig.add_trace(
+                go.Scatter(
+                    x=month_numbers,
+                    y=df_year[metric_col].tolist(),
+                    mode="lines+markers",
+                    name=str(year),
+                    line={"color": color, "width": 4 if year == latest_year else 2},
+                    marker={"size": 8 if year == latest_year else 6},
+                    hovertemplate=(
+                        "Mėnuo %{customdata[0]}<br>Metai %{name}<br>Reikšmė %{customdata[1]}<extra></extra>"
+                    ),
+                    customdata=customdata,
+                    legendgroup=str(year),
+                )
+            )
 
     fig.update_layout(
+        height=700,
         margin=dict(l=30, r=20, t=30, b=40),
         plot_bgcolor=IC_WHITE,
         paper_bgcolor=IC_WHITE,
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
         xaxis=dict(
             tickmode="array",
-            tickvals=ticks,
+            tickvals=tickvals,
             ticktext=ticktext,
             title="Mėnuo",
             gridcolor="#E5E5E5",
@@ -468,55 +587,110 @@ def update_customer_view(managers, clients, codes, years, metric):
             gridcolor="#E5E5E5",
             rangemode="tozero",
         ),
+        hovermode="x unified" if chart_type == "line" else "x",
+        transition_duration=300,
     )
+    if chart_type == "bar":
+        fig.update_layout(barmode="group", bargap=0.2)
 
-    # Build table
-    pivot = aggregated.pivot_table(
-        index="Mėnuo",
-        columns="Metai",
-        values=metric_col,
-        aggfunc="sum",
-        sort=False,
-    )
-    pivot = pivot.reindex(months)
-    pivot.index = pivot.index.astype(int)
+    # Build table with interleaved YoY columns
+    columns = [{"name": "Mėnuo", "id": "Mėnuo"}]
+    columns_order = ["Mėnuo"]
 
-    table_numeric = pivot.copy()
-    table_numeric.insert(0, "Mėnuo", table_numeric.index.astype(int).astype(str))
+    month_rows_numeric = []
+    for month in month_range:
+        row = {"Mėnuo": str(month)}
+        for year in years_sorted:
+            year_key = str(year)
+            raw_value = month_values.get(year, {}).get(month)
+            display_value = raw_value
+            if display_value is None:
+                display_value = 0.0
+            row[year_key] = display_value
 
-    totals = {}
-    for year in years_sorted:
-        if metric == "MARŽA %":
-            subset = aggregated[aggregated["Metai"] == year]
-            turnover = subset["Apyvarta"].sum()
-            profit = subset["Pajamos"].sum()
-            totals[str(year)] = (profit / turnover * 100.0) if turnover else None
-        else:
-            totals[str(year)] = aggregated.loc[aggregated["Metai"] == year, metric_col].sum()
+            prev_year = year - 1
+            if prev_year in years_set:
+                yoy_id = f"YoY_{year}"
+                months_curr = months_by_year.get(year, set())
+                months_prev = months_by_year.get(prev_year, set())
+                yoy_value = None
+                if month in months_curr and month in months_prev:
+                    current_val = month_values.get(year, {}).get(month)
+                    prev_val = month_values.get(prev_year, {}).get(month)
+                    if metric != "MARŽA %":
+                        current_val = current_val if current_val is not None else 0.0
+                        prev_val = prev_val if prev_val is not None else 0.0
+                    yoy_value = _calculate_yoy_percent(current_val, prev_val)
+                row[yoy_id] = yoy_value
+
+        month_rows_numeric.append(row)
 
     sum_row = {"Mėnuo": "suma"}
-    table_numeric = table_numeric.rename(
-        columns={year: str(year) for year in table_numeric.columns if isinstance(year, int)}
-    )
     for year in years_sorted:
-        sum_row[str(year)] = totals[str(year)]
-    columns = [{"name": "Mėnuo", "id": "Mėnuo"}] + [
-        {"name": str(year), "id": str(year)} for year in years_sorted
-    ]
+        year_key = str(year)
+        months_curr = months_by_year.get(year, set())
+        if metric == "MARŽA %":
+            turnover_total = sum(turnover_map.get(year, {}).get(m, 0.0) for m in months_curr)
+            profit_total = sum(profit_map.get(year, {}).get(m, 0.0) for m in months_curr)
+            total_value = (profit_total / turnover_total * 100.0) if turnover_total else 0.0
+        else:
+            total_value = sum(
+                (month_values.get(year, {}).get(m) if month_values.get(year, {}).get(m) is not None else 0.0)
+                for m in months_curr
+            )
+        sum_row[year_key] = total_value
 
-    data_rows = table_numeric.to_dict("records")
-    data_rows.append(sum_row)
+        prev_year = year - 1
+        if prev_year in years_set:
+            yoy_id = f"YoY_{year}"
+            comparable_months = months_by_year.get(year, set()) & months_by_year.get(prev_year, set())
+            if comparable_months:
+                if metric == "MARŽA %":
+                    curr_turnover = sum(turnover_map.get(year, {}).get(m, 0.0) for m in comparable_months)
+                    curr_profit = sum(profit_map.get(year, {}).get(m, 0.0) for m in comparable_months)
+                    prev_turnover = sum(turnover_map.get(prev_year, {}).get(m, 0.0) for m in comparable_months)
+                    prev_profit = sum(profit_map.get(prev_year, {}).get(m, 0.0) for m in comparable_months)
+                    curr_metric = (curr_profit / curr_turnover * 100.0) if curr_turnover else None
+                    prev_metric = (prev_profit / prev_turnover * 100.0) if prev_turnover else None
+                    yoy_total = _calculate_yoy_percent(curr_metric, prev_metric)
+                else:
+                    curr_metric = sum(
+                        (month_values.get(year, {}).get(m) if month_values.get(year, {}).get(m) is not None else 0.0)
+                        for m in comparable_months
+                    )
+                    prev_metric = sum(
+                        (month_values.get(prev_year, {}).get(m) if month_values.get(prev_year, {}).get(m) is not None else 0.0)
+                        for m in comparable_months
+                    )
+                    yoy_total = _calculate_yoy_percent(curr_metric, prev_metric)
+            else:
+                yoy_total = None
+            sum_row[yoy_id] = yoy_total
+
+    numeric_rows = month_rows_numeric + [sum_row]
+
+    for year in years_sorted:
+        year_key = str(year)
+        prev_year = year - 1
+        if prev_year in years_set:
+            yoy_id = f"YoY_{year}"
+            if yoy_id not in sum_row:
+                sum_row[yoy_id] = None
+            columns.append({"name": "YoY", "id": yoy_id})
+            columns_order.append(yoy_id)
+        columns.append({"name": str(year), "id": year_key})
+        columns_order.append(year_key)
 
     data_formatted = []
-    for row in data_rows:
+    for row in numeric_rows:
         formatted = {}
-        for key, value in row.items():
-            if key == "Mėnuo" and value != "suma":
-                formatted[key] = value
-            elif key == "Mėnuo":
-                formatted[key] = value
+        for key in columns_order:
+            if key == "Mėnuo":
+                formatted[key] = row.get(key, "")
+            elif key.startswith("YoY_"):
+                formatted[key] = _format_yoy(row.get(key))
             else:
-                formatted[key] = _format_table_value(metric, value)
+                formatted[key] = _format_table_value(metric, row.get(key))
         data_formatted.append(formatted)
 
     return fig, columns, data_formatted, empty_children, hidden, chart_style, table_style, status_text
@@ -544,7 +718,7 @@ def export_customer_data(n_clicks, managers, clients, codes, years, metric):
         "metai": years if isinstance(years, list) else (years or []),
     }
 
-    aggregated = compute_customer_monthly_aggregation(filters, metric)
+    aggregated, _ = compute_customer_monthly_aggregation(filters, metric)
     if aggregated.empty:
         return dash.no_update
 
@@ -557,7 +731,7 @@ def export_customer_data(n_clicks, managers, clients, codes, years, metric):
         sort=False,
     )
     pivot.index = pivot.index.astype(int)
-    pivot = pivot.sort_index()
+    pivot = pivot.reindex(range(1, 13)).fillna(0.0)
 
     totals = {}
     years_sorted = sorted(pivot.columns.tolist())

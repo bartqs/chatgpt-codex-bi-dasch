@@ -256,7 +256,7 @@ def _coalesce_expr(column: Optional[str], default: str) -> str:
 
 _CACHE_TTL_SECONDS = 300
 _customer_transactions_cache: Dict[Tuple[Any, ...], Tuple[float, pd.DataFrame]] = {}
-_customer_metric_cache: Dict[Tuple[Any, ...], Tuple[float, pd.DataFrame]] = {}
+_customer_metric_cache: Dict[Tuple[Any, ...], Tuple[float, Any]] = {}
 
 
 def _cache_key_from_filters(prefix: str, filters: Dict[str, Any]) -> Tuple[Any, ...]:
@@ -460,31 +460,36 @@ def fetch_customer_transactions(filters: Dict[str, Any]) -> pd.DataFrame:
     return df.copy(deep=False)
 
 
-def compute_customer_monthly_aggregation(filters: Dict[str, Any], metric: str) -> pd.DataFrame:
-    """Aggregate customer transactions by year and month."""
+def compute_customer_monthly_aggregation(
+    filters: Dict[str, Any], metric: str
+) -> Tuple[pd.DataFrame, List[int]]:
+    """Aggregate customer transactions by year and month.
+
+    Returns a tuple with the aggregated DataFrame and the list of month indexes
+    that exist for the latest year (used for comparable-month calculations).
+    """
 
     normalized = _normalize_filter_payload(filters)
     normalized["metric"] = metric
     cache_key = _cache_key_from_filters("customer_metric", normalized)
     cached = _cache_get(_customer_metric_cache, cache_key)
     if cached is not None:
-        return cached.copy(deep=False)
+        frame, latest_months_cached = cached
+        return frame.copy(deep=False), list(latest_months_cached)
 
     tx = fetch_customer_transactions(filters)
+    empty = pd.DataFrame(
+        columns=["Metai", "Menuo", "Mėnuo", "Apyvarta", "Pajamos", "Kiekis", "MARŽA %"]
+    )
+
     if tx.empty:
-        empty = pd.DataFrame(
-            columns=["Metai", "Menuo", "Mėnuo", "Apyvarta", "Pajamos", "Kiekis", "MARŽA %"]
-        )
-        _cache_set(_customer_metric_cache, cache_key, empty)
-        return empty
+        _cache_set(_customer_metric_cache, cache_key, (empty, tuple()))
+        return empty, []
 
     years = normalized["metai"] or sorted(tx["Metai"].dropna().unique().tolist())
     if not years:
-        empty = pd.DataFrame(
-            columns=["Metai", "Menuo", "Mėnuo", "Apyvarta", "Pajamos", "Kiekis", "MARŽA %"]
-        )
-        _cache_set(_customer_metric_cache, cache_key, empty)
-        return empty
+        _cache_set(_customer_metric_cache, cache_key, (empty, tuple()))
+        return empty, []
 
     tx = tx[tx["Metai"].isin([int(y) for y in years])]
     grouped = (
@@ -494,11 +499,8 @@ def compute_customer_monthly_aggregation(filters: Dict[str, Any], metric: str) -
     )
 
     if grouped.empty:
-        empty = pd.DataFrame(
-            columns=["Metai", "Menuo", "Mėnuo", "Apyvarta", "Pajamos", "Kiekis", "MARŽA %"]
-        )
-        _cache_set(_customer_metric_cache, cache_key, empty)
-        return empty
+        _cache_set(_customer_metric_cache, cache_key, (empty, tuple()))
+        return empty, []
 
     grouped["Menuo"] = grouped["Menuo"].astype(str)
     grouped["Mėnuo"] = grouped["Menuo"].map(MONTH_ORDER)
@@ -512,23 +514,17 @@ def compute_customer_monthly_aggregation(filters: Dict[str, Any], metric: str) -
     )
 
     latest_year = max(grouped["Metai"].unique().tolist())
-    latest_months = (
-        grouped.loc[grouped["Metai"] == latest_year, "Menuo"].astype(str).unique().tolist()
+    latest_months = sorted(
+        grouped.loc[grouped["Metai"] == latest_year, "Mėnuo"].astype(int).unique().tolist()
     )
 
-    if not latest_months:
-        empty = pd.DataFrame(
-            columns=["Metai", "Menuo", "Mėnuo", "Apyvarta", "Pajamos", "Kiekis", "MARŽA %"]
-        )
-        _cache_set(_customer_metric_cache, cache_key, empty)
-        return empty
-
-    allowed = set(latest_months)
-    grouped = grouped[grouped["Menuo"].isin(allowed)]
-
     grouped = grouped.sort_values(["Mėnuo", "Metai"], kind="mergesort").reset_index(drop=True)
-    _cache_set(_customer_metric_cache, cache_key, grouped)
-    return grouped.copy(deep=False)
+    _cache_set(
+        _customer_metric_cache,
+        cache_key,
+        (grouped.copy(deep=False), tuple(latest_months)),
+    )
+    return grouped.copy(deep=False), latest_months
 
 
 # ==================== Helper Functions ====================

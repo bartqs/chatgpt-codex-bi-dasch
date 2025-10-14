@@ -55,6 +55,9 @@ YOY_NEG_BG = "rgba(227, 6, 19, 0.2)"
 YOY_NEUTRAL_BG = "rgba(120, 120, 120, 0.16)"
 
 
+CHART_HEIGHT = 450
+
+
 BASE_TABLE_STYLE = {
     "overflowX": "hidden",
     "border": f"1px solid {IC_GRAY}",
@@ -243,7 +246,7 @@ def layout():
             dcc.Graph(
                 id="customer-chart",
                 config={"displaylogo": False},
-                style={"height": "700px"},
+                style={"height": f"{CHART_HEIGHT}px"},
             ),
         ],
         id="customer-chart-wrapper",
@@ -742,7 +745,7 @@ def update_customer_view(managers, clients, codes, years, metric, chart_type):
             )
 
     fig.update_layout(
-        height=700,
+        height=CHART_HEIGHT,
         margin=dict(l=30, r=20, t=30, b=40),
         plot_bgcolor=IC_WHITE,
         paper_bgcolor=IC_WHITE,

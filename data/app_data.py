@@ -198,6 +198,15 @@ MONTH_ORDER = {code: idx + 1 for idx, code in enumerate(MENUO_TVARKA)}
 MONTH_NAME_MAP = {code: MENUO_LABELS_LT[idx] for idx, code in enumerate(MENUO_TVARKA)}
 
 
+def _add_expanding_params(stmt, params):
+    """Attach SQLAlchemy expanding bind parameters for IN clauses."""
+
+    for key, value in list(params.items()):
+        if isinstance(value, (list, tuple, set)) and value:
+            stmt = stmt.bindparams(bindparam(key, expanding=True))
+    return stmt
+
+
 def _resolve_customer_columns() -> Dict[str, Optional[str]]:
     """Identify source columns for the customer overview page."""
 

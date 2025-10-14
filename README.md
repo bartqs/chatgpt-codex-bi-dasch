@@ -26,3 +26,23 @@ Follow the steps below to run the application locally:
 
 Ensure that the MySQL database referenced in the application is accessible
 before launching the app.
+
+## Klientų apžvalga
+
+Trečiasis puslapis „Klientų apžvalga“ (adresu `/customers`) leidžia analizuoti
+konkretaus kliento rezultatus pagal pasirinktus metus ir metrikas. Puslapio
+filtrai:
+
+- **Pardavimų vadybininkas** – kelių pasirinkimų sąrašas, ribojantis klientų
+  parinktis pagal vadybininką.
+- **Klientas** – kelių pasirinkimų laukas; duomenys užkraunami tik tuomet, kai
+  parinktas vienas konkretus klientas.
+- **Kliento kodas** – rodomi tik su pasirinktu klientu susieti kodai.
+- **Metai** – kelių metų palyginimas (paskutinis metų rinkinys parenkamas pagal
+  naujausią turimą metus).
+- **Matas** – galima perjungti tarp APYVARTA, PAJAMOS, MARŽA % ir KIEKIS.
+
+Grafikas rodo mėnesinę dinamiką pagal pasirinktus metus, o lentelė pateikia
+tas pačias reikšmes su „suma“ eilute. Mygtukas „Eksportuoti į Excel“ leidžia
+išsisaugoti filtruotą lentelę (failo pavadinime įtraukiamas kliento vardas ir
+metrika).

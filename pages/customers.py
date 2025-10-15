@@ -4,7 +4,7 @@ import dash
 import pandas as pd
 from dash import Input, Output, State, callback, dash_table, dcc, html
 import plotly.graph_objects as go
-from typing import Any, Iterable, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from data.app_data import (
     CUSTOMER_COLORWAY,
@@ -20,6 +20,7 @@ from data.app_data import (
     _fmt_eur,
     _fmt_pct,
     _fmt_qty,
+    compute_customer_category_detail_summary,
     compute_customer_category_group_summary,
     compute_customer_monthly_aggregation,
     get_customer_filter_frame,
@@ -119,6 +120,43 @@ CATEGORY_CELL_CONDITIONAL = [
         "maxWidth": "260px",
     }
 ]
+
+
+CATEGORY_DETAIL_TABLE_STYLE = {
+    "overflowX": "auto",
+    "overflowY": "auto",
+    "maxHeight": "380px",
+    "border": f"1px solid {IC_GRAY}",
+    "borderRadius": "10px",
+    "minWidth": "100%",
+}
+
+CATEGORY_DETAIL_CELL_STYLE = {
+    "padding": "6px 10px",
+    "fontFamily": "Arial",
+    "fontSize": "13px",
+    "textAlign": "right",
+    "whiteSpace": "nowrap",
+}
+
+CATEGORY_DETAIL_CELL_CONDITIONAL = [
+    {
+        "if": {"column_id": "Kategorija"},
+        "textAlign": "left",
+        "minWidth": "220px",
+        "width": "240px",
+        "maxWidth": "320px",
+    }
+]
+
+
+CATEGORY_DETAIL_WRAPPER_STYLE = {
+    "background": IC_WHITE,
+    "border": f"1px solid {IC_GRAY}",
+    "borderRadius": "10px",
+    "padding": "16px",
+    "margin": "0 16px 32px",
+}
 
 
 EMPTY_MESSAGE = html.Div(
@@ -502,6 +540,92 @@ def layout():
         },
     )
 
+    category_detail_section = html.Div(
+        [
+            html.Div(
+                [
+                    html.Div(
+                        id="customer-category-detail-title",
+                        style={"fontWeight": 700, "color": IC_NAVY},
+                    ),
+                    html.Div(
+                        [
+                            html.Button(
+                                "Uždaryti",
+                                id="customer-category-detail-close",
+                                n_clicks=0,
+                                style={
+                                    "background": "transparent",
+                                    "border": "none",
+                                    "color": IC_RED,
+                                    "cursor": "pointer",
+                                    "fontWeight": 600,
+                                },
+                            ),
+                            html.Button(
+                                "Eksportuoti į Excel",
+                                id="customer-category-detail-export",
+                                n_clicks=0,
+                                title="Eksportuoti į Excel",
+                                style={
+                                    "marginLeft": "12px",
+                                    "background": IC_NAVY,
+                                    "color": IC_WHITE,
+                                    "border": "none",
+                                    "padding": "6px 14px",
+                                    "borderRadius": "6px",
+                                    "fontWeight": 600,
+                                    "cursor": "pointer",
+                                },
+                            ),
+                        ],
+                        style={
+                            "marginLeft": "auto",
+                            "display": "flex",
+                            "alignItems": "center",
+                            "gap": "6px",
+                        },
+                    ),
+                ],
+                style={
+                    "display": "flex",
+                    "alignItems": "center",
+                    "gap": "12px",
+                    "marginBottom": "8px",
+                },
+            ),
+            dash_table.DataTable(
+                id="customer-category-detail-table",
+                columns=[],
+                data=[],
+                tooltip_data=[],
+                tooltip_delay=0,
+                tooltip_duration=None,
+                style_table=dict(CATEGORY_DETAIL_TABLE_STYLE),
+                style_cell=dict(CATEGORY_DETAIL_CELL_STYLE),
+                style_cell_conditional=[
+                    dict(item) for item in CATEGORY_DETAIL_CELL_CONDITIONAL
+                ],
+                style_header={
+                    "backgroundColor": IC_NAVY,
+                    "color": IC_WHITE,
+                    "fontWeight": 700,
+                    "textAlign": "center",
+                    "padding": "6px 8px",
+                },
+                style_data_conditional=[
+                    {"if": {"row_index": "odd"}, "backgroundColor": "#F7F9FC"},
+                    {"if": {"column_id": "Kategorija"}, "textAlign": "left"},
+                ],
+                fixed_columns={"headers": True, "data": 1},
+                markdown_options={"html": True},
+            ),
+            dcc.Download(id="customer-category-detail-export-download"),
+        ],
+        id="customer-category-detail-wrapper",
+        style={**CATEGORY_DETAIL_WRAPPER_STYLE, "display": "none"},
+    )
+
     return html.Div(
         [
             filter_row,
@@ -510,6 +634,8 @@ def layout():
             chart_section,
             table_section,
             category_section,
+            category_detail_section,
+            dcc.Store(id="customer-category-selected-group"),
         ],
         style={"background": IC_BG, "minHeight": "100vh"},
     )
@@ -1381,8 +1507,11 @@ def export_customer_data(n_clicks, managers, clients, codes, years, metric):
     Input("customer-client", "value"),
     Input("customer-code", "value"),
     Input("customer-years", "value"),
+    State("customer-category-selected-group", "data"),
 )
-def update_category_table(metric, show_changes_value, managers, clients, codes, years):
+def update_category_table(
+    metric, show_changes_value, managers, clients, codes, years, selected_group
+):
     metric = metric or "APYVARTA"
     show_changes = bool(show_changes_value and "show" in show_changes_value)
     table_style = dict(CATEGORY_TABLE_STYLE)
@@ -1474,16 +1603,20 @@ def update_category_table(metric, show_changes_value, managers, clients, codes, 
         {"name": "Vidurkis 6 mėn.", "id": "avg_6m"},
     ]
 
-    formatted = []
+    formatted: List[Dict[str, Any]] = []
     tooltip_rows: List[Dict[str, Any]] = []
-    for _, row in frame.iterrows():
-        last_value = row["last_value"]
-        prev_value = row["previous_value"]
-        avg3_value = row["avg_3m"]
-        avg6_value = row["avg_6m"]
+    highlighted_index: Optional[int] = None
+    for idx, row in enumerate(frame.itertuples(index=False)):
+        last_value = row.last_value
+        prev_value = row.previous_value
+        avg3_value = row.avg_3m
+        avg6_value = row.avg_6m
+        group_name = row.Kategorijos_grupe
+        if selected_group and group_name == selected_group and highlighted_index is None:
+            highlighted_index = idx
         formatted.append(
             {
-                "Kategorijos grupe": row["Kategorijos grupe"],
+                "Kategorijos grupe": group_name,
                 "last_value": _build_category_last_cell(
                     metric,
                     last_value,
@@ -1499,7 +1632,7 @@ def update_category_table(metric, show_changes_value, managers, clients, codes, 
                     show_changes,
                     tooltip_avg,
                 ),
-                "avg_6m": _format_category_value(metric, row["avg_6m"]),
+                "avg_6m": _format_category_value(metric, row.avg_6m),
             }
         )
         tooltip_rows.append(
@@ -1509,9 +1642,253 @@ def update_category_table(metric, show_changes_value, managers, clients, codes, 
             }
         )
 
+    if highlighted_index is not None:
+        data_conditional.append(
+            {
+                "if": {"row_index": highlighted_index},
+                "backgroundColor": "rgba(227, 6, 19, 0.08)",
+            }
+        )
+        data_conditional.append(
+            {
+                "if": {"row_index": highlighted_index},
+                "borderLeft": f"4px solid {IC_RED}",
+            }
+        )
+
     return (
         columns,
         formatted,
+        tooltip_rows,
+        table_style,
+        cell_style,
+        cell_conditional,
+        data_conditional,
+    )
+
+
+@callback(
+    Output("customer-category-selected-group", "data"),
+    Output("customer-category-detail-wrapper", "style"),
+    Output("customer-category-detail-title", "children"),
+    Output("customer-category-detail-table", "columns"),
+    Output("customer-category-detail-table", "data"),
+    Output("customer-category-detail-table", "tooltip_data"),
+    Output("customer-category-detail-table", "style_table"),
+    Output("customer-category-detail-table", "style_cell"),
+    Output("customer-category-detail-table", "style_cell_conditional"),
+    Output("customer-category-detail-table", "style_data_conditional"),
+    Input("customer-category-table", "active_cell"),
+    Input("customer-category-detail-close", "n_clicks"),
+    Input("customer-category-metric", "value"),
+    Input("customer-category-show-changes", "value"),
+    Input("customer-manager", "value"),
+    Input("customer-client", "value"),
+    Input("customer-code", "value"),
+    Input("customer-years", "value"),
+    State("customer-category-table", "data"),
+    State("customer-category-selected-group", "data"),
+)
+def update_category_detail(
+    active_cell,
+    close_clicks,
+    metric,
+    show_changes_value,
+    managers,
+    clients,
+    codes,
+    years,
+    table_data,
+    stored_selection,
+):
+    metric = metric or "APYVARTA"
+    show_changes = bool(show_changes_value and "show" in show_changes_value)
+
+    table_style = dict(CATEGORY_DETAIL_TABLE_STYLE)
+    cell_style = dict(CATEGORY_DETAIL_CELL_STYLE)
+    cell_conditional = [dict(item) for item in CATEGORY_DETAIL_CELL_CONDITIONAL]
+    data_conditional = [
+        {"if": {"row_index": "odd"}, "backgroundColor": "#F7F9FC"},
+        {"if": {"column_id": "Kategorija"}, "textAlign": "left"},
+    ]
+
+    for col_id in ["previous_value", "avg_3m", "avg_6m"]:
+        width_conf = {
+            "if": {"column_id": col_id},
+            "minWidth": "140px",
+            "width": "140px",
+            "maxWidth": "160px",
+        }
+        if col_id == "avg_3m" and show_changes:
+            width_conf.update({"minWidth": "200px", "width": "220px", "maxWidth": "260px"})
+        cell_conditional.append(width_conf)
+        data_conditional.append(
+            {
+                "if": {"filter_query": f'{{{col_id}}} = "—"', "column_id": col_id},
+                "color": "#6c757d",
+            }
+        )
+
+    last_column_style = {
+        "if": {"column_id": "last_value"},
+        "minWidth": "220px",
+        "width": "240px",
+        "maxWidth": "320px",
+        "whiteSpace": "normal",
+    }
+    if not show_changes:
+        last_column_style.update(
+            {
+                "minWidth": "160px",
+                "width": "180px",
+                "maxWidth": "220px",
+                "whiteSpace": "nowrap",
+            }
+        )
+    cell_conditional.append(last_column_style)
+
+    wrapper_style = dict(CATEGORY_DETAIL_WRAPPER_STYLE)
+    wrapper_style["display"] = "none"
+    title = ""
+    columns: List[Dict[str, Any]] = []
+    data_rows: List[Dict[str, Any]] = []
+    tooltip_rows: List[Dict[str, Any]] = []
+
+    table_rows = table_data or []
+    available_groups = {
+        row.get("Kategorijos grupe")
+        for row in table_rows
+        if isinstance(row, dict) and row.get("Kategorijos grupe")
+    }
+
+    ctx = dash.callback_context
+    triggered = ctx.triggered[0]["prop_id"] if ctx.triggered else ""
+
+    selection = stored_selection or None
+    if triggered == "customer-category-detail-close.n_clicks":
+        selection = None
+    elif triggered == "customer-category-table.active_cell":
+        selection = None
+        if active_cell and isinstance(active_cell, dict):
+            row_idx = active_cell.get("row")
+            if isinstance(row_idx, int) and 0 <= row_idx < len(table_rows):
+                candidate = table_rows[row_idx].get("Kategorijos grupe")
+                if candidate:
+                    selection = candidate
+
+    if selection and selection not in available_groups:
+        selection = None
+
+    selected_clients = clients if isinstance(clients, list) else (clients or [])
+    if not selected_clients or len(selected_clients) != 1 or not selection:
+        return (
+            selection,
+            wrapper_style,
+            title,
+            columns,
+            data_rows,
+            tooltip_rows,
+            table_style,
+            cell_style,
+            cell_conditional,
+            data_conditional,
+        )
+
+    filters = {
+        "vadybininkas": managers if isinstance(managers, list) else (managers or []),
+        "klientas": selected_clients,
+        "kliento_kodas": codes if isinstance(codes, list) else (codes or []),
+        "metai": years if isinstance(years, list) else (years or []),
+    }
+
+    frame, metadata = compute_customer_category_detail_summary(filters, metric, selection)
+    if frame.empty:
+        return (
+            None,
+            wrapper_style,
+            title,
+            columns,
+            data_rows,
+            tooltip_rows,
+            table_style,
+            cell_style,
+            cell_conditional,
+            data_conditional,
+        )
+
+    last_label = _format_period_label(metadata.get("last_period"))
+    prev_label = _format_period_label(metadata.get("previous_period"))
+    window3_label = _format_window_range(metadata.get("window3_periods"))
+    window6_label = _format_window_range(metadata.get("window6_periods"))
+
+    tooltip_prev = None
+    if last_label and prev_label:
+        tooltip_prev = f"{last_label} vs {prev_label} (MoM)"
+    tooltip_avg = None
+    if window3_label and window6_label:
+        tooltip_avg = f"Avg3 ({window3_label}) vs Avg6 ({window6_label})"
+
+    columns = [
+        {"name": "Kategorija", "id": "Kategorija"},
+        {
+            "name": "Paskutinis mėnuo" + (f" ({last_label})" if last_label else ""),
+            "id": "last_value",
+            "presentation": "markdown",
+        },
+        {
+            "name": "Ankstesnis mėnuo" + (f" ({prev_label})" if prev_label else ""),
+            "id": "previous_value",
+        },
+        {
+            "name": "Vidurkis 3 mėn.",
+            "id": "avg_3m",
+            "presentation": "markdown",
+        },
+        {"name": "Vidurkis 6 mėn.", "id": "avg_6m"},
+    ]
+
+    for row in frame.itertuples(index=False):
+        last_value = row.last_value
+        prev_value = row.previous_value
+        avg3_value = row.avg_3m
+        avg6_value = row.avg_6m
+        data_rows.append(
+            {
+                "Kategorija": row.Kategorija,
+                "last_value": _build_category_last_cell(
+                    metric,
+                    last_value,
+                    prev_value,
+                    show_changes,
+                    tooltip_prev,
+                ),
+                "previous_value": _format_category_value(metric, prev_value),
+                "avg_3m": _build_category_avg3_cell(
+                    metric,
+                    avg3_value,
+                    avg6_value,
+                    show_changes,
+                    tooltip_avg,
+                ),
+                "avg_6m": _format_category_value(metric, avg6_value),
+            }
+        )
+        tooltip_rows.append(
+            {
+                "last_value": (tooltip_prev or "") if show_changes else "",
+                "avg_3m": (tooltip_avg or "") if show_changes else "",
+            }
+        )
+
+    wrapper_style["display"] = "block"
+    title = f"Kategorijos (grupė: {selection})"
+
+    return (
+        selection,
+        wrapper_style,
+        title,
+        columns,
+        data_rows,
         tooltip_rows,
         table_style,
         cell_style,
@@ -1563,4 +1940,57 @@ def export_category_table(n_clicks, metric, managers, clients, codes, years):
 
     client_name = selected_clients[0].replace(" ", "_")
     filename = f"kategorijos_grupe_{client_name}_{metric}.xlsx"
+    return dcc.send_data_frame(export_df.to_excel, filename, index=False)
+
+
+@callback(
+    Output("customer-category-detail-export-download", "data"),
+    Input("customer-category-detail-export", "n_clicks"),
+    State("customer-category-selected-group", "data"),
+    State("customer-category-metric", "value"),
+    State("customer-manager", "value"),
+    State("customer-client", "value"),
+    State("customer-code", "value"),
+    State("customer-years", "value"),
+    prevent_initial_call=True,
+)
+def export_category_detail_table(
+    n_clicks, selection, metric, managers, clients, codes, years
+):
+    metric = metric or "APYVARTA"
+    if not selection:
+        return dash.no_update
+
+    selected_clients = clients if isinstance(clients, list) else (clients or [])
+    if not selected_clients or len(selected_clients) != 1:
+        return dash.no_update
+
+    filters = {
+        "vadybininkas": managers if isinstance(managers, list) else (managers or []),
+        "klientas": selected_clients,
+        "kliento_kodas": codes if isinstance(codes, list) else (codes or []),
+        "metai": years if isinstance(years, list) else (years or []),
+    }
+
+    frame, metadata = compute_customer_category_detail_summary(filters, metric, selection)
+    if frame.empty:
+        return dash.no_update
+
+    last_label = _format_period_label(metadata.get("last_period"))
+    prev_label = _format_period_label(metadata.get("previous_period"))
+
+    export_df = frame.copy()
+    export_df = export_df.rename(
+        columns={
+            "Kategorija": "Kategorija",
+            "last_value": "Paskutinis mėnuo" + (f" ({last_label})" if last_label else ""),
+            "previous_value": "Ankstesnis mėnuo" + (f" ({prev_label})" if prev_label else ""),
+            "avg_3m": "Vidurkis 3 mėn.",
+            "avg_6m": "Vidurkis 6 mėn.",
+        }
+    )
+
+    client_name = selected_clients[0].replace(" ", "_")
+    group_name = str(selection).replace(" ", "_")
+    filename = f"kategorijos_{group_name}_{client_name}_{metric}.xlsx"
     return dcc.send_data_frame(export_df.to_excel, filename, index=False)

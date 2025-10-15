@@ -9,6 +9,7 @@ used across the dashboard pages.
 from __future__ import annotations
 
 import os
+import re
 import time
 from functools import lru_cache
 from typing import Any, Dict, List, Optional, Sequence, Tuple
@@ -34,6 +35,49 @@ RED = "#C62828"
 MENUO_TVARKA = [f"M-{i:02d}" for i in range(1, 13)]
 MENUO_LABELS_LT = ["Sau", "Vas", "Kov", "Bal", "Geg", "Bir", "Lie", "Rgp", "Rgs", "Spa", "Lap", "Gru"]
 METRICS = ["APYVARTA", "PAJAMOS", "MARŽA %", "KIEKIS"]
+
+CATEGORY_GROUP_PRIORITY = (
+    "FILTERS",
+    "SUSPENSION",
+    "ENGINE",
+    "LUBRICANTS & LIQUIDS",
+    "BODY PARTS",
+    "GASKETS",
+    "SHOCK ABSORBTION",
+    "BRAKES, OTHER ELEMENTS",
+    "OTHER PRODUCTS",
+    "TIMING",
+    "BRAKE PADS",
+    "ELECTRIC",
+    "BRAKE DISCS",
+    "WHEEL",
+    "IGNITION AND PLUGS",
+    "GARAGE EQUIPMENT",
+    "COOLING",
+    "DRIVE",
+    "EXHAUST SYSTEM",
+    "WHEEL BEARING, HUB",
+    "WIPER BLADE",
+    "CLUTCH",
+    "AIR CONDITIONING",
+    "ACCESSORIES",
+    "PNEUMATICS",
+    "BATTERY",
+    "CLOTHES AND HELMETS",
+)
+
+
+def _normalize_category_group_name(name: Any) -> str:
+    if name is None:
+        return ""
+    normalized = re.sub(r"[^A-Z0-9]+", "", str(name).upper())
+    return normalized
+
+
+_CATEGORY_GROUP_PRIORITY_MAP = {
+    _normalize_category_group_name(label): idx
+    for idx, label in enumerate(CATEGORY_GROUP_PRIORITY)
+}
 
 
 # ==================== DB Connection with Proper Pooling ====================
@@ -738,11 +782,28 @@ def compute_customer_category_group_summary(
 
     result = pd.DataFrame(rows)
     if not result.empty:
+        result["_normalized"] = result["Kategorijos grupe"].map(
+            _normalize_category_group_name
+        )
+        result["_priority_rank"] = result["_normalized"].map(
+            _CATEGORY_GROUP_PRIORITY_MAP
+        )
+        max_rank = len(CATEGORY_GROUP_PRIORITY)
+        result["_priority_flag"] = result["_priority_rank"].isna().astype(int)
+        result["_priority_rank"] = (
+            result["_priority_rank"].fillna(max_rank).astype(int)
+        )
+        result["_alpha"] = result["Kategorijos grupe"].astype(str).str.casefold()
+        result.loc[result["_priority_flag"] == 0, "_alpha"] = ""
         result.sort_values(
-            by="last_value",
-            ascending=False,
+            by=["_priority_flag", "_priority_rank", "_alpha", "last_value"],
+            ascending=[True, True, True, False],
             inplace=True,
             kind="mergesort",
+        )
+        result.drop(
+            columns=["_normalized", "_priority_rank", "_priority_flag", "_alpha"],
+            inplace=True,
         )
 
     metadata = {

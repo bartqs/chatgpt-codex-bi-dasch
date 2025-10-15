@@ -2,6 +2,7 @@ from html import escape
 
 import dash
 import pandas as pd
+import time
 from dash import Input, Output, State, callback, dash_table, dcc, html
 import plotly.graph_objects as go
 from typing import Any, Dict, Iterable, List, Optional, Tuple
@@ -44,10 +45,15 @@ CLIENT_OPTIONS = sorted(FILTER_FRAME["Klientas"].dropna().unique().tolist())
 CODE_OPTIONS = sorted(FILTER_FRAME["Kliento kodas"].dropna().unique().tolist())
 YEAR_OPTIONS = get_customer_year_options()
 LATEST_YEAR = get_latest_customer_year()
-DEFAULT_YEARS = []
-if LATEST_YEAR:
-    DEFAULT_YEARS = [y for y in YEAR_OPTIONS if LATEST_YEAR - 3 <= y <= LATEST_YEAR]
-    DEFAULT_YEARS = sorted(DEFAULT_YEARS) or [LATEST_YEAR]
+DEFAULT_YEARS: List[int] = []
+if YEAR_OPTIONS:
+    sorted_years = sorted(YEAR_OPTIONS)
+    if len(sorted_years) >= 2:
+        DEFAULT_YEARS = sorted_years[-2:]
+    else:
+        DEFAULT_YEARS = [sorted_years[-1]]
+elif LATEST_YEAR:
+    DEFAULT_YEARS = [LATEST_YEAR]
 
 METRIC_COLUMN_MAP = {
     "APYVARTA": "Apyvarta",
@@ -584,6 +590,7 @@ def layout():
                 [
                     html.Div(
                         id="customer-category-detail-title",
+                        className="customer-section-header-title",
                         style={"fontWeight": 700, "color": IC_NAVY},
                     ),
                     html.Div(
@@ -625,6 +632,7 @@ def layout():
                         },
                     ),
                 ],
+                className="customer-section-header",
                 style={
                     "display": "flex",
                     "alignItems": "center",
@@ -670,6 +678,7 @@ def layout():
                 [
                     html.Div(
                         id="customer-category-vendor-title",
+                        className="customer-section-header-title",
                         style={"fontWeight": 700, "color": IC_NAVY},
                     ),
                     html.Div(
@@ -692,6 +701,7 @@ def layout():
                         },
                     ),
                 ],
+                className="customer-section-header",
                 style={
                     "display": "flex",
                     "alignItems": "center",
@@ -745,6 +755,9 @@ def layout():
             category_vendor_section,
             dcc.Store(id="customer-category-selected-group"),
             dcc.Store(id="customer-category-selected-category"),
+            dcc.Store(id="customer-category-scroll-signal"),
+            dcc.Store(id="customer-category-vendor-scroll-signal"),
+            dcc.Store(id="customer-scroll-ack"),
         ],
         style={"background": IC_BG, "minHeight": "100vh"},
     )
@@ -1787,6 +1800,7 @@ def update_category_table(
     Output("customer-category-detail-table", "style_cell"),
     Output("customer-category-detail-table", "style_cell_conditional"),
     Output("customer-category-detail-table", "style_data_conditional"),
+    Output("customer-category-scroll-signal", "data"),
     Input("customer-category-table", "active_cell"),
     Input("customer-category-detail-close", "n_clicks"),
     Input("customer-category-metric", "value"),
@@ -1891,7 +1905,14 @@ def update_category_detail(
         selection = None
 
     selected_clients = clients if isinstance(clients, list) else (clients or [])
+    scroll_signal = dash.no_update
+
     if not selected_clients or len(selected_clients) != 1 or not selection:
+        if triggered in {
+            "customer-category-detail-close.n_clicks",
+            "customer-category-vendor-close.n_clicks",
+        }:
+            scroll_signal = None
         return (
             selection,
             wrapper_style,
@@ -1903,6 +1924,7 @@ def update_category_detail(
             cell_style,
             cell_conditional,
             data_conditional,
+            scroll_signal,
         )
 
     filters = {
@@ -1914,6 +1936,8 @@ def update_category_detail(
 
     frame, metadata = compute_customer_category_detail_summary(filters, metric, selection)
     if frame.empty:
+        if triggered == "customer-category-detail-close.n_clicks":
+            scroll_signal = None
         return (
             None,
             wrapper_style,
@@ -1925,6 +1949,7 @@ def update_category_detail(
             cell_style,
             cell_conditional,
             data_conditional,
+            scroll_signal,
         )
 
     last_label = _format_period_label(metadata.get("last_period"))
@@ -2018,6 +2043,11 @@ def update_category_detail(
     wrapper_style["display"] = "block"
     title = f"Kategorijos (grupė: {selection})"
 
+    if selection and triggered == "customer-category-table.active_cell":
+        scroll_signal = {"target": "category", "ts": time.time()}
+    elif triggered == "customer-category-detail-close.n_clicks":
+        scroll_signal = None
+
     return (
         selection,
         wrapper_style,
@@ -2029,6 +2059,7 @@ def update_category_detail(
         cell_style,
         cell_conditional,
         data_conditional,
+        scroll_signal,
     )
 
 
@@ -2043,6 +2074,7 @@ def update_category_detail(
     Output("customer-category-vendor-table", "style_cell"),
     Output("customer-category-vendor-table", "style_cell_conditional"),
     Output("customer-category-vendor-table", "style_data_conditional"),
+    Output("customer-category-vendor-scroll-signal", "data"),
     Input("customer-category-detail-table", "active_cell"),
     Input("customer-category-vendor-close", "n_clicks"),
     Input("customer-category-detail-close", "n_clicks"),
@@ -2155,6 +2187,8 @@ def update_category_vendor(
         selection = None
 
     selected_clients = clients if isinstance(clients, list) else (clients or [])
+    scroll_signal = dash.no_update
+
     if (
         not selected_clients
         or len(selected_clients) != 1
@@ -2172,6 +2206,7 @@ def update_category_vendor(
             cell_style,
             cell_conditional,
             data_conditional,
+            scroll_signal,
         )
 
     filters = {
@@ -2185,6 +2220,10 @@ def update_category_vendor(
         filters, metric, selected_group, selection
     )
     if frame.empty:
+        if triggered == "customer-category-detail-close.n_clicks" or (
+            triggered == "customer-category-vendor-close.n_clicks"
+        ):
+            scroll_signal = None
         return (
             None,
             wrapper_style,
@@ -2196,6 +2235,7 @@ def update_category_vendor(
             cell_style,
             cell_conditional,
             data_conditional,
+            scroll_signal,
         )
 
     last_label = _format_period_label(metadata.get("last_period"))
@@ -2266,6 +2306,14 @@ def update_category_vendor(
     wrapper_style["display"] = "block"
     title = f"Gamintojai (grupė: {selected_group}, kategorija: {selection})"
 
+    if selection and triggered == "customer-category-detail-table.active_cell":
+        scroll_signal = {"target": "vendor", "ts": time.time()}
+    elif triggered in {
+        "customer-category-vendor-close.n_clicks",
+        "customer-category-detail-close.n_clicks",
+    }:
+        scroll_signal = None
+
     return (
         selection,
         wrapper_style,
@@ -2277,6 +2325,7 @@ def update_category_vendor(
         cell_style,
         cell_conditional,
         data_conditional,
+        scroll_signal,
     )
 
 
@@ -2377,3 +2426,50 @@ def export_category_detail_table(
     group_name = str(selection).replace(" ", "_")
     filename = f"kategorijos_{group_name}_{client_name}_{metric}.xlsx"
     return dcc.send_data_frame(export_df.to_excel, filename, index=False)
+
+
+dash.clientside_callback(
+    """
+    function(categorySignal, vendorSignal){
+        const signals = [categorySignal, vendorSignal];
+        const handled = new Set();
+        const offset = 80;
+        const prefersReduced = typeof window.matchMedia === 'function' &&
+            window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+        signals.forEach(function(signal){
+            if(!signal || !signal.target || handled.has(signal.target)){
+                return;
+            }
+            handled.add(signal.target);
+
+            const targetId = signal.target === 'vendor'
+                ? 'customer-category-vendor-wrapper'
+                : 'customer-category-detail-wrapper';
+            const element = document.getElementById(targetId);
+            if(!element || element.style.display === 'none'){
+                return;
+            }
+
+            const rect = element.getBoundingClientRect();
+            const targetTop = window.pageYOffset + rect.top - offset;
+
+            if(prefersReduced){
+                window.scrollTo(0, targetTop);
+            } else {
+                window.scrollTo({top: targetTop, behavior: 'smooth'});
+            }
+
+            element.classList.add('scroll-flash');
+            window.setTimeout(function(){
+                element.classList.remove('scroll-flash');
+            }, 1500);
+        });
+
+        return null;
+    }
+    """,
+    Output("customer-scroll-ack", "data"),
+    Input("customer-category-scroll-signal", "data"),
+    Input("customer-category-vendor-scroll-signal", "data"),
+)

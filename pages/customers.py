@@ -22,6 +22,7 @@ from data.app_data import (
     _fmt_qty,
     compute_customer_category_detail_summary,
     compute_customer_category_group_summary,
+    compute_customer_category_vendor_summary,
     compute_customer_monthly_aggregation,
     get_customer_filter_frame,
     get_customer_year_options,
@@ -151,6 +152,43 @@ CATEGORY_DETAIL_CELL_CONDITIONAL = [
 
 
 CATEGORY_DETAIL_WRAPPER_STYLE = {
+    "background": IC_WHITE,
+    "border": f"1px solid {IC_GRAY}",
+    "borderRadius": "10px",
+    "padding": "16px",
+    "margin": "0 16px 32px",
+}
+
+
+CATEGORY_VENDOR_TABLE_STYLE = {
+    "overflowX": "auto",
+    "overflowY": "auto",
+    "maxHeight": "360px",
+    "border": f"1px solid {IC_GRAY}",
+    "borderRadius": "10px",
+    "minWidth": "100%",
+}
+
+CATEGORY_VENDOR_CELL_STYLE = {
+    "padding": "6px 10px",
+    "fontFamily": "Arial",
+    "fontSize": "13px",
+    "textAlign": "right",
+    "whiteSpace": "nowrap",
+}
+
+CATEGORY_VENDOR_CELL_CONDITIONAL = [
+    {
+        "if": {"column_id": "Gamintojas (pavad)"},
+        "textAlign": "left",
+        "minWidth": "220px",
+        "width": "240px",
+        "maxWidth": "320px",
+    }
+]
+
+
+CATEGORY_VENDOR_WRAPPER_STYLE = {
     "background": IC_WHITE,
     "border": f"1px solid {IC_GRAY}",
     "borderRadius": "10px",
@@ -626,6 +664,75 @@ def layout():
         style={**CATEGORY_DETAIL_WRAPPER_STYLE, "display": "none"},
     )
 
+    category_vendor_section = html.Div(
+        [
+            html.Div(
+                [
+                    html.Div(
+                        id="customer-category-vendor-title",
+                        style={"fontWeight": 700, "color": IC_NAVY},
+                    ),
+                    html.Div(
+                        html.Button(
+                            "Uždaryti",
+                            id="customer-category-vendor-close",
+                            n_clicks=0,
+                            style={
+                                "background": "transparent",
+                                "border": "none",
+                                "color": IC_RED,
+                                "cursor": "pointer",
+                                "fontWeight": 600,
+                            },
+                        ),
+                        style={
+                            "marginLeft": "auto",
+                            "display": "flex",
+                            "alignItems": "center",
+                        },
+                    ),
+                ],
+                style={
+                    "display": "flex",
+                    "alignItems": "center",
+                    "gap": "12px",
+                    "marginBottom": "8px",
+                },
+            ),
+            dash_table.DataTable(
+                id="customer-category-vendor-table",
+                columns=[],
+                data=[],
+                tooltip_data=[],
+                tooltip_delay=0,
+                tooltip_duration=None,
+                style_table=dict(CATEGORY_VENDOR_TABLE_STYLE),
+                style_cell=dict(CATEGORY_VENDOR_CELL_STYLE),
+                style_cell_conditional=[
+                    dict(item) for item in CATEGORY_VENDOR_CELL_CONDITIONAL
+                ],
+                style_header={
+                    "backgroundColor": IC_NAVY,
+                    "color": IC_WHITE,
+                    "fontWeight": 700,
+                    "textAlign": "center",
+                    "padding": "6px 8px",
+                },
+                style_data_conditional=[
+                    {"if": {"row_index": "odd"}, "backgroundColor": "#F7F9FC"},
+                    {
+                        "if": {"column_id": "Gamintojas (pavad)"},
+                        "textAlign": "left",
+                    },
+                ],
+                fixed_columns={"headers": True, "data": 1},
+                markdown_options={"html": True},
+            ),
+        ],
+        id="customer-category-vendor-wrapper",
+        style={**CATEGORY_VENDOR_WRAPPER_STYLE, "display": "none"},
+    )
+
     return html.Div(
         [
             filter_row,
@@ -635,7 +742,9 @@ def layout():
             table_section,
             category_section,
             category_detail_section,
+            category_vendor_section,
             dcc.Store(id="customer-category-selected-group"),
+            dcc.Store(id="customer-category-selected-category"),
         ],
         style={"background": IC_BG, "minHeight": "100vh"},
     )
@@ -1682,6 +1791,7 @@ def update_category_table(
     Input("customer-category-detail-close", "n_clicks"),
     Input("customer-category-metric", "value"),
     Input("customer-category-show-changes", "value"),
+    Input("customer-category-selected-category", "data"),
     Input("customer-manager", "value"),
     Input("customer-client", "value"),
     Input("customer-code", "value"),
@@ -1694,6 +1804,7 @@ def update_category_detail(
     close_clicks,
     metric,
     show_changes_value,
+    selected_category,
     managers,
     clients,
     codes,
@@ -1847,14 +1958,286 @@ def update_category_detail(
         {"name": "Vidurkis 6 mėn.", "id": "avg_6m"},
     ]
 
-    for row in frame.itertuples(index=False):
-        last_value = row.last_value
-        prev_value = row.previous_value
-        avg3_value = row.avg_3m
-        avg6_value = row.avg_6m
+    highlight_index: Optional[int] = None
+    records = frame.to_dict("records")
+    for idx, row in enumerate(records):
+        last_value = row.get("last_value")
+        prev_value = row.get("previous_value")
+        avg3_value = row.get("avg_3m")
+        avg6_value = row.get("avg_6m")
+        category_name = row.get("Kategorija")
+        if (
+            selected_category
+            and isinstance(selected_category, str)
+            and category_name == selected_category
+            and highlight_index is None
+        ):
+            highlight_index = idx
         data_rows.append(
             {
-                "Kategorija": row.Kategorija,
+                "Kategorija": category_name,
+                "last_value": _build_category_last_cell(
+                    metric,
+                    last_value,
+                    prev_value,
+                    show_changes,
+                    tooltip_prev,
+                ),
+                "previous_value": _format_category_value(metric, prev_value),
+                "avg_3m": _build_category_avg3_cell(
+                    metric,
+                    avg3_value,
+                    avg6_value,
+                    show_changes,
+                    tooltip_avg,
+                ),
+                "avg_6m": _format_category_value(metric, avg6_value),
+            }
+        )
+        tooltip_rows.append(
+            {
+                "last_value": (tooltip_prev or "") if show_changes else "",
+                "avg_3m": (tooltip_avg or "") if show_changes else "",
+            }
+        )
+
+    if highlight_index is not None:
+        data_conditional.append(
+            {
+                "if": {"row_index": highlight_index},
+                "backgroundColor": "rgba(227, 6, 19, 0.08)",
+            }
+        )
+        data_conditional.append(
+            {
+                "if": {"row_index": highlight_index},
+                "borderLeft": f"4px solid {IC_RED}",
+            }
+        )
+
+    wrapper_style["display"] = "block"
+    title = f"Kategorijos (grupė: {selection})"
+
+    return (
+        selection,
+        wrapper_style,
+        title,
+        columns,
+        data_rows,
+        tooltip_rows,
+        table_style,
+        cell_style,
+        cell_conditional,
+        data_conditional,
+    )
+
+
+@callback(
+    Output("customer-category-selected-category", "data"),
+    Output("customer-category-vendor-wrapper", "style"),
+    Output("customer-category-vendor-title", "children"),
+    Output("customer-category-vendor-table", "columns"),
+    Output("customer-category-vendor-table", "data"),
+    Output("customer-category-vendor-table", "tooltip_data"),
+    Output("customer-category-vendor-table", "style_table"),
+    Output("customer-category-vendor-table", "style_cell"),
+    Output("customer-category-vendor-table", "style_cell_conditional"),
+    Output("customer-category-vendor-table", "style_data_conditional"),
+    Input("customer-category-detail-table", "active_cell"),
+    Input("customer-category-vendor-close", "n_clicks"),
+    Input("customer-category-detail-close", "n_clicks"),
+    Input("customer-category-metric", "value"),
+    Input("customer-category-show-changes", "value"),
+    Input("customer-manager", "value"),
+    Input("customer-client", "value"),
+    Input("customer-code", "value"),
+    Input("customer-years", "value"),
+    Input("customer-category-selected-group", "data"),
+    State("customer-category-detail-table", "data"),
+    State("customer-category-selected-category", "data"),
+)
+def update_category_vendor(
+    active_cell,
+    close_clicks,
+    detail_close_clicks,
+    metric,
+    show_changes_value,
+    managers,
+    clients,
+    codes,
+    years,
+    selected_group,
+    table_data,
+    stored_category,
+):
+    metric = metric or "APYVARTA"
+    show_changes = bool(show_changes_value and "show" in show_changes_value)
+
+    table_style = dict(CATEGORY_VENDOR_TABLE_STYLE)
+    cell_style = dict(CATEGORY_VENDOR_CELL_STYLE)
+    cell_conditional = [dict(item) for item in CATEGORY_VENDOR_CELL_CONDITIONAL]
+    data_conditional = [
+        {"if": {"row_index": "odd"}, "backgroundColor": "#F7F9FC"},
+        {"if": {"column_id": "Gamintojas (pavad)"}, "textAlign": "left"},
+    ]
+
+    for col_id in ["previous_value", "avg_3m", "avg_6m"]:
+        width_conf = {
+            "if": {"column_id": col_id},
+            "minWidth": "140px",
+            "width": "140px",
+            "maxWidth": "160px",
+        }
+        if col_id == "avg_3m" and show_changes:
+            width_conf.update({"minWidth": "200px", "width": "220px", "maxWidth": "260px"})
+        cell_conditional.append(width_conf)
+        data_conditional.append(
+            {
+                "if": {"filter_query": f'{{{col_id}}} = "—"', "column_id": col_id},
+                "color": "#6c757d",
+            }
+        )
+
+    last_column_style = {
+        "if": {"column_id": "last_value"},
+        "minWidth": "220px",
+        "width": "240px",
+        "maxWidth": "320px",
+        "whiteSpace": "normal",
+    }
+    if not show_changes:
+        last_column_style.update(
+            {
+                "minWidth": "160px",
+                "width": "180px",
+                "maxWidth": "220px",
+                "whiteSpace": "nowrap",
+            }
+        )
+    cell_conditional.append(last_column_style)
+
+    wrapper_style = dict(CATEGORY_VENDOR_WRAPPER_STYLE)
+    wrapper_style["display"] = "none"
+    title = ""
+    columns: List[Dict[str, Any]] = []
+    data_rows: List[Dict[str, Any]] = []
+    tooltip_rows: List[Dict[str, Any]] = []
+
+    table_rows = table_data or []
+    available_categories = {
+        row.get("Kategorija")
+        for row in table_rows
+        if isinstance(row, dict) and row.get("Kategorija")
+    }
+
+    ctx = dash.callback_context
+    triggered = ctx.triggered[0]["prop_id"] if ctx.triggered else ""
+
+    selection = stored_category or None
+    if triggered in {
+        "customer-category-vendor-close.n_clicks",
+        "customer-category-detail-close.n_clicks",
+    }:
+        selection = None
+    elif triggered == "customer-category-detail-table.active_cell":
+        selection = None
+        if active_cell and isinstance(active_cell, dict):
+            row_idx = active_cell.get("row")
+            if isinstance(row_idx, int) and 0 <= row_idx < len(table_rows):
+                candidate = table_rows[row_idx].get("Kategorija")
+                if candidate:
+                    selection = candidate
+
+    if not selected_group:
+        selection = None
+
+    if selection and selection not in available_categories:
+        selection = None
+
+    selected_clients = clients if isinstance(clients, list) else (clients or [])
+    if (
+        not selected_clients
+        or len(selected_clients) != 1
+        or not selection
+        or not selected_group
+    ):
+        return (
+            selection,
+            wrapper_style,
+            title,
+            columns,
+            data_rows,
+            tooltip_rows,
+            table_style,
+            cell_style,
+            cell_conditional,
+            data_conditional,
+        )
+
+    filters = {
+        "vadybininkas": managers if isinstance(managers, list) else (managers or []),
+        "klientas": selected_clients,
+        "kliento_kodas": codes if isinstance(codes, list) else (codes or []),
+        "metai": years if isinstance(years, list) else (years or []),
+    }
+
+    frame, metadata = compute_customer_category_vendor_summary(
+        filters, metric, selected_group, selection
+    )
+    if frame.empty:
+        return (
+            None,
+            wrapper_style,
+            title,
+            columns,
+            data_rows,
+            tooltip_rows,
+            table_style,
+            cell_style,
+            cell_conditional,
+            data_conditional,
+        )
+
+    last_label = _format_period_label(metadata.get("last_period"))
+    prev_label = _format_period_label(metadata.get("previous_period"))
+    window3_label = _format_window_range(metadata.get("window3_periods"))
+    window6_label = _format_window_range(metadata.get("window6_periods"))
+
+    tooltip_prev = None
+    if last_label and prev_label:
+        tooltip_prev = f"{last_label} vs {prev_label} (MoM)"
+    tooltip_avg = None
+    if window3_label and window6_label:
+        tooltip_avg = f"Avg3 ({window3_label}) vs Avg6 ({window6_label})"
+
+    columns = [
+        {"name": "Gamintojas (pavad)", "id": "Gamintojas (pavad)"},
+        {
+            "name": "Paskutinis mėnuo" + (f" ({last_label})" if last_label else ""),
+            "id": "last_value",
+            "presentation": "markdown",
+        },
+        {
+            "name": "Ankstesnis mėnuo" + (f" ({prev_label})" if prev_label else ""),
+            "id": "previous_value",
+        },
+        {
+            "name": "Vidurkis 3 mėn.",
+            "id": "avg_3m",
+            "presentation": "markdown",
+        },
+        {"name": "Vidurkis 6 mėn.", "id": "avg_6m"},
+    ]
+
+    for row in frame.to_dict("records"):
+        last_value = row.get("last_value")
+        prev_value = row.get("previous_value")
+        avg3_value = row.get("avg_3m")
+        avg6_value = row.get("avg_6m")
+        vendor_name = row.get("Gamintojas (pavad)")
+        data_rows.append(
+            {
+                "Gamintojas (pavad)": vendor_name,
                 "last_value": _build_category_last_cell(
                     metric,
                     last_value,
@@ -1881,7 +2264,7 @@ def update_category_detail(
         )
 
     wrapper_style["display"] = "block"
-    title = f"Kategorijos (grupė: {selection})"
+    title = f"Gamintojai (grupė: {selected_group}, kategorija: {selection})"
 
     return (
         selection,

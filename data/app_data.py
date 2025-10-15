@@ -990,12 +990,13 @@ def compute_customer_category_vendor_summary(
     )
 
     vendor_records: Dict[str, Dict[Tuple[int, int], Dict[str, float]]] = {}
-    for row in grouped.itertuples(index=False):
-        key = row._asdict()["Gamintojas (pavad)"]
-        vendor_records.setdefault(key, {})[(int(row.Metai), int(row.Mėnuo))] = {
-            "Apyvarta": float(row.Apyvarta),
-            "Pajamos": float(row.Pajamos),
-            "Kiekis": float(row.Kiekis),
+    for vendor, year, month, apyvarta, pajamos, kiekis in grouped.itertuples(
+        index=False, name=None
+    ):
+        vendor_records.setdefault(vendor, {})[(int(year), int(month))] = {
+            "Apyvarta": float(apyvarta),
+            "Pajamos": float(pajamos),
+            "Kiekis": float(kiekis),
         }
 
     rows: List[Dict[str, Any]] = []

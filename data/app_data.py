@@ -726,6 +726,12 @@ def compute_customer_category_group_summary(
     metadata = {
         "last_period": (last_year, last_month),
         "previous_period": prev_period,
+        "window3_periods": [
+            (int(period[0]), int(period[1])) for period in window3
+        ],
+        "window6_periods": [
+            (int(period[0]), int(period[1])) for period in window6
+        ],
     }
 
     _cache_set(_customer_category_cache, cache_key, (result.copy(deep=False), metadata))

@@ -1791,26 +1791,26 @@ def update_category_table(
     Input("customer-category-detail-close", "n_clicks"),
     Input("customer-category-metric", "value"),
     Input("customer-category-show-changes", "value"),
-    Input("customer-category-selected-category", "data"),
     Input("customer-manager", "value"),
     Input("customer-client", "value"),
     Input("customer-code", "value"),
     Input("customer-years", "value"),
     State("customer-category-table", "data"),
     State("customer-category-selected-group", "data"),
+    State("customer-category-selected-category", "data"),
 )
 def update_category_detail(
     active_cell,
     close_clicks,
     metric,
     show_changes_value,
-    selected_category,
     managers,
     clients,
     codes,
     years,
     table_data,
     stored_selection,
+    selected_category,
 ):
     metric = metric or "APYVARTA"
     show_changes = bool(show_changes_value and "show" in show_changes_value)

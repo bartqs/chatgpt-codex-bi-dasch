@@ -1606,12 +1606,12 @@ def update_category_table(
     formatted: List[Dict[str, Any]] = []
     tooltip_rows: List[Dict[str, Any]] = []
     highlighted_index: Optional[int] = None
-    for idx, row in enumerate(frame.itertuples(index=False)):
-        last_value = row.last_value
-        prev_value = row.previous_value
-        avg3_value = row.avg_3m
-        avg6_value = row.avg_6m
-        group_name = row.Kategorijos_grupe
+    for idx, row in enumerate(frame.to_dict("records")):
+        last_value = row.get("last_value")
+        prev_value = row.get("previous_value")
+        avg3_value = row.get("avg_3m")
+        avg6_value = row.get("avg_6m")
+        group_name = row.get("Kategorijos grupe")
         if selected_group and group_name == selected_group and highlighted_index is None:
             highlighted_index = idx
         formatted.append(
@@ -1632,7 +1632,7 @@ def update_category_table(
                     show_changes,
                     tooltip_avg,
                 ),
-                "avg_6m": _format_category_value(metric, row.avg_6m),
+                "avg_6m": _format_category_value(metric, row.get("avg_6m")),
             }
         )
         tooltip_rows.append(

@@ -4,7 +4,7 @@ import dash
 import pandas as pd
 from dash import Input, Output, State, callback, dash_table, dcc, html
 import plotly.graph_objects as go
-from typing import Iterable, Optional, Tuple
+from typing import Any, Iterable, Optional, Tuple
 
 from data.app_data import (
     CUSTOMER_COLORWAY,
@@ -467,6 +467,9 @@ def layout():
                 id="customer-category-table",
                 columns=[],
                 data=[],
+                tooltip_data=[],
+                tooltip_delay=0,
+                tooltip_duration=None,
                 style_table=dict(CATEGORY_TABLE_STYLE),
                 style_cell=dict(CATEGORY_CELL_STYLE),
                 style_cell_conditional=[dict(item) for item in CATEGORY_CELL_CONDITIONAL],
@@ -664,33 +667,38 @@ def _format_category_value(metric: str, value: Optional[float]) -> str:
 def _format_delta_percent(metric: str, value: Optional[float]) -> str:
     if value is None or pd.isna(value):
         return "—"
-    if abs(float(value)) < 1e-9:
-        return "0.00 %" if metric != "MARŽA %" else "0.00 p.p."
+    numeric = float(value)
     if metric == "MARŽA %":
-        sign = "+" if value > 0 else ""
-        return f"{sign}{float(value):.2f} p.p."
-    sign = "+" if value > 0 else ""
-    return f"{sign}{float(value):.2f} %"
+        if abs(numeric) < 1e-9:
+            return "0.00 p.p."
+        sign = "+" if numeric > 0 else ""
+        return f"{sign}{numeric:.2f} p.p."
+    capped = max(min(numeric, 999.0), -999.0)
+    if abs(capped) < 1e-9:
+        return "0.00 %"
+    sign = "+" if capped > 0 else ""
+    return f"{sign}{capped:.2f} %"
 
 
 def _format_delta_value(metric: str, value: Optional[float]) -> str:
     if value is None or pd.isna(value):
         return "—"
+    numeric = float(value)
     if metric in ("APYVARTA", "PAJAMOS"):
-        formatted = _fmt_eur(value)
-        if float(value) > 0:
+        formatted = _fmt_eur(numeric)
+        if numeric > 0:
             return "+" + formatted
         return formatted
     if metric == "KIEKIS":
-        formatted = _fmt_qty(value)
-        if float(value) > 0:
+        formatted = _fmt_qty(numeric)
+        if numeric > 0:
             return "+" + formatted
         return formatted
     if metric == "MARŽA %":
-        if abs(float(value)) < 1e-9:
+        if abs(numeric) < 1e-9:
             return "0.00 p.p."
-        sign = "+" if value > 0 else ""
-        return f"{sign}{float(value):.2f} p.p."
+        sign = "+" if numeric > 0 else ""
+        return f"{sign}{numeric:.2f} p.p."
     return "—"
 
 
@@ -712,15 +720,15 @@ def _delta_color(value: Optional[float]) -> str:
     return BADGE_TEXT_NEUTRAL
 
 
-def _delta_background(value: Optional[float]) -> Tuple[str, float]:
+def _delta_background(value: Optional[float]) -> str:
     if value is None or pd.isna(value):
-        return BADGE_NEUTRAL_BG, 0.0
-    magnitude = min(abs(float(value)), 100.0)
-    if float(value) > 0:
-        return BADGE_POS_BG, magnitude
-    if float(value) < 0:
-        return BADGE_NEG_BG, magnitude
-    return BADGE_NEUTRAL_BG, magnitude
+        return BADGE_NEUTRAL_BG
+    numeric = float(value)
+    if numeric > 0:
+        return BADGE_POS_BG
+    if numeric < 0:
+        return BADGE_NEG_BG
+    return BADGE_NEUTRAL_BG
 
 
 def _format_window_range(periods: Optional[Iterable[Tuple[int, int]]]) -> Optional[str]:
@@ -732,8 +740,8 @@ def _format_window_range(periods: Optional[Iterable[Tuple[int, int]]]) -> Option
     start_year, start_month = ordered[0]
     end_year, end_month = ordered[-1]
     if len(ordered) == 1:
-        return f"avg({start_year}-{start_month:02d})"
-    return f"avg({start_year}-{start_month:02d}..{end_year}-{end_month:02d})"
+        return f"{start_year}-{start_month:02d}"
+    return f"{start_year}-{start_month:02d}..{end_year}-{end_month:02d}"
 
 
 def _compute_delta(metric: str, current: Optional[float], baseline: Optional[float]) -> Tuple[Optional[float], Optional[float]]:
@@ -761,42 +769,41 @@ def _build_change_badge(
     safe_label = escape(label)
     tooltip_attr = f" title='{escape(tooltip)}'" if tooltip else ""
 
-    reference_value = pct_value if pct_value is not None and not pd.isna(pct_value) else diff_value
+    reference_value = diff_value if diff_value is not None and not pd.isna(diff_value) else pct_value
     if reference_value is None or pd.isna(reference_value):
         return (
-            "<div style='position:relative;padding:2px 8px;border-radius:10px;"
-            "display:inline-flex;align-items:center;font-size:11px;font-weight:500;"
-            f"color:{BADGE_TEXT_NEUTRAL};min-height:22px;background:{BADGE_NEUTRAL_BG};' {tooltip_attr}>"
-            f"<span style='position:relative;white-space:nowrap;'>Δ {safe_label} —</span>"
-            "</div>"
+            "<span style='display:inline-flex;align-items:center;padding:2px 6px;border-radius:8px;"
+            f"background:{BADGE_NEUTRAL_BG};color:{BADGE_TEXT_NEUTRAL};font-size:11px;font-weight:500;' {tooltip_attr}>"
+            f"Δ {safe_label}: —"
+            "</span>"
         )
 
     color = _delta_color(reference_value)
-    background, width = _delta_background(reference_value)
+    background = _delta_background(reference_value)
     arrow = _delta_arrow(reference_value)
-    pct_text = _format_delta_percent(metric, pct_value)
-    diff_text = _format_delta_value(metric, diff_value)
-    diff_part = f" | {diff_text}" if diff_text != "—" else ""
-    badge_text = f"Δ {safe_label} {arrow} {pct_text}{diff_part}"
 
-    gradient_direction = "90deg"
-    if float(reference_value) < 0:
-        gradient_direction = "270deg"
+    if metric == "MARŽA %":
+        pct_text = _format_delta_percent(metric, diff_value)
+        diff_part = ""
+    else:
+        pct_text = _format_delta_percent(metric, pct_value)
+        diff_text = _format_delta_value(metric, diff_value)
+        diff_part = f" | {escape(diff_text)}" if diff_text != "—" else ""
 
-    bar_html = (
-        "<div style='position:absolute;inset:0;border-radius:10px;"
-        f"background:linear-gradient({gradient_direction},{background} {width}%, rgba(0,0,0,0) {width}%);"
-        "opacity:0.35;'></div>"
-    )
+    if pct_text == "—" and not diff_part:
+        return (
+            "<span style='display:inline-flex;align-items:center;padding:2px 6px;border-radius:8px;"
+            f"background:{BADGE_NEUTRAL_BG};color:{BADGE_TEXT_NEUTRAL};font-size:11px;font-weight:500;' {tooltip_attr}>"
+            f"Δ {safe_label}: —"
+            "</span>"
+        )
 
+    badge_text = f"Δ {safe_label}: {arrow} {escape(pct_text)}{diff_part}"
     return (
-        "<div style='position:relative;padding:2px 8px;border-radius:10px;"
-        "display:inline-flex;align-items:center;font-size:11px;font-weight:600;"
-        f"color:{color};min-height:22px;' {tooltip_attr}>"
-        + bar_html
-        + "<span style='position:relative;white-space:nowrap;'>"
+        "<span style='display:inline-flex;align-items:center;padding:2px 6px;border-radius:8px;gap:4px;"
+        f"background:{background};color:{color};font-size:11px;font-weight:600;' {tooltip_attr}>"
         + badge_text
-        + "</span></div>"
+        + "</span>"
     )
 
 
@@ -804,10 +811,8 @@ def _build_category_last_cell(
     metric: str,
     last_value: Optional[float],
     previous_value: Optional[float],
-    avg3_value: Optional[float],
     show_changes: bool,
     tooltip_prev: Optional[str],
-    tooltip_avg3: Optional[str],
 ) -> str:
     base_text = _format_category_value(metric, last_value)
     if not show_changes:
@@ -818,20 +823,40 @@ def _build_category_last_cell(
         )
 
     pct_prev, diff_prev = _compute_delta(metric, last_value, previous_value)
-    pct_avg3, diff_avg3 = _compute_delta(metric, last_value, avg3_value)
-
-    badges_html = "".join(
-        [
-            _build_change_badge(metric, pct_prev, diff_prev, "M/M-1", tooltip_prev),
-            _build_change_badge(metric, pct_avg3, diff_avg3, "vs 3m", tooltip_avg3),
-        ]
-    )
+    badge_html = _build_change_badge(metric, pct_prev, diff_prev, "M/M-1", tooltip_prev)
     return (
         "<div style='position:relative;padding:4px 0 2px;display:flex;flex-direction:column;"
         "align-items:flex-end;gap:6px;'>"
         f"<span style='font-weight:700;color:{IC_NAVY};'>{base_text}</span>"
         "<div style='display:flex;flex-wrap:wrap;gap:4px;justify-content:flex-end;'>"
-        + badges_html
+        + badge_html
+        + "</div></div>"
+    )
+
+
+def _build_category_avg3_cell(
+    metric: str,
+    avg3_value: Optional[float],
+    avg6_value: Optional[float],
+    show_changes: bool,
+    tooltip_avg: Optional[str],
+) -> str:
+    base_text = _format_category_value(metric, avg3_value)
+    if not show_changes:
+        return (
+            "<div style='display:flex;flex-direction:column;align-items:flex-end;gap:4px;'>"
+            f"<span style='font-weight:700;color:{IC_NAVY};'>{base_text}</span>"
+            "</div>"
+        )
+
+    pct_vs6, diff_vs6 = _compute_delta(metric, avg3_value, avg6_value)
+    badge_html = _build_change_badge(metric, pct_vs6, diff_vs6, "vs 6m", tooltip_avg)
+    return (
+        "<div style='position:relative;padding:4px 0 2px;display:flex;flex-direction:column;"
+        "align-items:flex-end;gap:6px;'>"
+        f"<span style='font-weight:700;color:{IC_NAVY};'>{base_text}</span>"
+        "<div style='display:flex;flex-wrap:wrap;gap:4px;justify-content:flex-end;'>"
+        + badge_html
         + "</div></div>"
     )
 
@@ -1345,6 +1370,7 @@ def export_customer_data(n_clicks, managers, clients, codes, years, metric):
 @callback(
     Output("customer-category-table", "columns"),
     Output("customer-category-table", "data"),
+    Output("customer-category-table", "tooltip_data"),
     Output("customer-category-table", "style_table"),
     Output("customer-category-table", "style_cell"),
     Output("customer-category-table", "style_cell_conditional"),
@@ -1368,14 +1394,15 @@ def update_category_table(metric, show_changes_value, managers, clients, codes, 
     ]
 
     for col_id in ["previous_value", "avg_3m", "avg_6m"]:
-        cell_conditional.append(
-            {
-                "if": {"column_id": col_id},
-                "minWidth": "140px",
-                "width": "140px",
-                "maxWidth": "160px",
-            }
-        )
+        width_conf = {
+            "if": {"column_id": col_id},
+            "minWidth": "140px",
+            "width": "140px",
+            "maxWidth": "160px",
+        }
+        if col_id == "avg_3m" and show_changes:
+            width_conf.update({"minWidth": "200px", "width": "220px", "maxWidth": "260px"})
+        cell_conditional.append(width_conf)
         data_conditional.append(
             {
                 "if": {"filter_query": f'{{{col_id}}} = "—"', "column_id": col_id},
@@ -1403,7 +1430,7 @@ def update_category_table(metric, show_changes_value, managers, clients, codes, 
 
     selected_clients = clients if isinstance(clients, list) else (clients or [])
     if not selected_clients or len(selected_clients) != 1:
-        return [], [], table_style, cell_style, cell_conditional, data_conditional
+        return [], [], [], table_style, cell_style, cell_conditional, data_conditional
 
     filters = {
         "vadybininkas": managers if isinstance(managers, list) else (managers or []),
@@ -1414,18 +1441,19 @@ def update_category_table(metric, show_changes_value, managers, clients, codes, 
 
     frame, metadata = compute_customer_category_group_summary(filters, metric)
     if frame.empty:
-        return [], [], table_style, cell_style, cell_conditional, data_conditional
+        return [], [], [], table_style, cell_style, cell_conditional, data_conditional
 
     last_label = _format_period_label(metadata.get("last_period"))
     prev_label = _format_period_label(metadata.get("previous_period"))
     window3_label = _format_window_range(metadata.get("window3_periods"))
+    window6_label = _format_window_range(metadata.get("window6_periods"))
 
     tooltip_prev = None
     if last_label and prev_label:
-        tooltip_prev = f"{last_label} vs {prev_label}"
-    tooltip_avg3 = None
-    if last_label and window3_label:
-        tooltip_avg3 = f"{last_label} vs {window3_label}"
+        tooltip_prev = f"{last_label} vs {prev_label} (MoM)"
+    tooltip_avg = None
+    if window3_label and window6_label:
+        tooltip_avg = f"Avg3 ({window3_label}) vs Avg6 ({window6_label})"
 
     columns = [
         {"name": "Kategorijos grupe", "id": "Kategorijos grupe"},
@@ -1438,15 +1466,21 @@ def update_category_table(metric, show_changes_value, managers, clients, codes, 
             "name": "Ankstesnis mėnuo" + (f" ({prev_label})" if prev_label else ""),
             "id": "previous_value",
         },
-        {"name": "Vidurkis 3 mėn.", "id": "avg_3m"},
+        {
+            "name": "Vidurkis 3 mėn.",
+            "id": "avg_3m",
+            "presentation": "markdown",
+        },
         {"name": "Vidurkis 6 mėn.", "id": "avg_6m"},
     ]
 
     formatted = []
+    tooltip_rows: List[Dict[str, Any]] = []
     for _, row in frame.iterrows():
         last_value = row["last_value"]
         prev_value = row["previous_value"]
         avg3_value = row["avg_3m"]
+        avg6_value = row["avg_6m"]
         formatted.append(
             {
                 "Kategorijos grupe": row["Kategorijos grupe"],
@@ -1454,18 +1488,36 @@ def update_category_table(metric, show_changes_value, managers, clients, codes, 
                     metric,
                     last_value,
                     prev_value,
-                    avg3_value,
                     show_changes,
                     tooltip_prev,
-                    tooltip_avg3,
                 ),
                 "previous_value": _format_category_value(metric, prev_value),
-                "avg_3m": _format_category_value(metric, avg3_value),
+                "avg_3m": _build_category_avg3_cell(
+                    metric,
+                    avg3_value,
+                    avg6_value,
+                    show_changes,
+                    tooltip_avg,
+                ),
                 "avg_6m": _format_category_value(metric, row["avg_6m"]),
             }
         )
+        tooltip_rows.append(
+            {
+                "last_value": (tooltip_prev or "") if show_changes else "",
+                "avg_3m": (tooltip_avg or "") if show_changes else "",
+            }
+        )
 
-    return columns, formatted, table_style, cell_style, cell_conditional, data_conditional
+    return (
+        columns,
+        formatted,
+        tooltip_rows,
+        table_style,
+        cell_style,
+        cell_conditional,
+        data_conditional,
+    )
 
 
 @callback(

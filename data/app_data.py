@@ -231,12 +231,20 @@ def _resolve_customer_columns() -> Dict[str, Optional[str]]:
         "Customer code",
     ]
 
+    category_candidates = [
+        "Kategorija",
+        "Kategorija (pavad)",
+        "Kategorija [Name]",
+        "Category",
+    ]
+
     return {
         "year": "`Year [Name] PE-Y01`",
         "month": "`Month [Short name] PE-M02`",
         "manager": pick_col(cols, manager_candidates) or "`Vadybininkas`",
         "customer": pick_col(cols, customer_candidates) or "`Klientas`",
         "customer_code": pick_col(cols, customer_code_candidates),
+        "category": pick_col(cols, category_candidates),
         "turnover": "`APYVARTA`",
         "profit": "`PAJAMOS`",
         "quantity": "`KIEKIS`",
@@ -257,6 +265,29 @@ def _coalesce_expr(column: Optional[str], default: str) -> str:
 _CACHE_TTL_SECONDS = 300
 _customer_transactions_cache: Dict[Tuple[Any, ...], Tuple[float, pd.DataFrame]] = {}
 _customer_metric_cache: Dict[Tuple[Any, ...], Tuple[float, Any]] = {}
+_customer_category_cache: Dict[Tuple[Any, ...], Tuple[float, Any]] = {}
+
+
+@lru_cache(maxsize=1)
+def _load_category_mapping() -> pd.DataFrame:
+    """Fetch category → category group relationships."""
+
+    stmt = text(
+        """
+        SELECT
+            COALESCE(`Kategorija`, 'Nepriskirta')        AS Kategorija,
+            COALESCE(`Kategorijos_grupe`, 'Nepriskirta') AS Kategorijos_grupe
+        FROM kategorijos
+        """
+    )
+
+    with engine.connect() as conn:
+        df = pd.read_sql(stmt, conn)
+
+    df["Kategorija"] = df["Kategorija"].fillna("Nepriskirta")
+    df["Kategorijos_grupe"] = df["Kategorijos_grupe"].fillna("Nepriskirta")
+    df = df.drop_duplicates(subset=["Kategorija"])
+    return df
 
 
 def _cache_key_from_filters(prefix: str, filters: Dict[str, Any]) -> Tuple[Any, ...]:
@@ -397,6 +428,7 @@ def fetch_customer_transactions(filters: Dict[str, Any]) -> pd.DataFrame:
     manager_expr = _coalesce_expr(CUSTOMER_COLUMNS["manager"], "Nežinomas")
     customer_expr = _coalesce_expr(CUSTOMER_COLUMNS["customer"], "Nežinomas klientas")
     code_expr = _coalesce_expr(CUSTOMER_COLUMNS["customer_code"], "ND")
+    category_expr = _coalesce_expr(CUSTOMER_COLUMNS.get("category"), "Nepriskirta")
     turnover_col = CUSTOMER_COLUMNS["turnover"]
     profit_col = CUSTOMER_COLUMNS["profit"]
     quantity_col = CUSTOMER_COLUMNS["quantity"]
@@ -430,6 +462,7 @@ def fetch_customer_transactions(filters: Dict[str, Any]) -> pd.DataFrame:
             {manager_expr}               AS Vadybininkas,
             {customer_expr}              AS Klientas,
             {code_expr}                  AS KlientoKodas,
+            {category_expr}                 AS Kategorija,
             CAST({turnover_col} AS DECIMAL(18,2)) AS Apyvarta,
             CAST({profit_col}   AS DECIMAL(18,2)) AS Pajamos,
             CAST({quantity_col} AS DECIMAL(18,2)) AS Kiekis
@@ -453,6 +486,7 @@ def fetch_customer_transactions(filters: Dict[str, Any]) -> pd.DataFrame:
     df["Vadybininkas"] = df["Vadybininkas"].fillna("Nežinomas")
     df["Klientas"] = df["Klientas"].fillna("Nežinomas klientas")
     df["Kliento kodas"] = df["Kliento kodas"].fillna("ND").astype(str)
+    df["Kategorija"] = df["Kategorija"].fillna("Nepriskirta")
     for col in ["Apyvarta", "Pajamos", "Kiekis"]:
         df[col] = pd.to_numeric(df[col], errors="coerce").astype("float64")
 
@@ -525,6 +559,177 @@ def compute_customer_monthly_aggregation(
         (grouped.copy(deep=False), tuple(latest_months)),
     )
     return grouped.copy(deep=False), latest_months
+
+
+# ==================== Customer Category Aggregations ====================
+def _previous_month(year: int, month: int) -> Tuple[int, int]:
+    if month == 1:
+        return year - 1, 12
+    return year, month - 1
+
+
+def _metric_sum_for_entries(metric: str, entries: List[Dict[str, float]], average: bool) -> Optional[float]:
+    if not entries:
+        return None
+
+    if metric == "MARŽA %":
+        turnover = sum(item.get("Apyvarta", 0.0) for item in entries)
+        profit = sum(item.get("Pajamos", 0.0) for item in entries)
+        if turnover == 0:
+            return None
+        return (profit / turnover) * 100.0
+
+    field = {
+        "APYVARTA": "Apyvarta",
+        "PAJAMOS": "Pajamos",
+        "KIEKIS": "Kiekis",
+    }.get(metric)
+
+    if not field:
+        return None
+
+    total = sum(item.get(field, 0.0) for item in entries)
+    if average:
+        count = len(entries)
+        return (total / count) if count else None
+    return total
+
+
+def compute_customer_category_group_summary(
+    filters: Dict[str, Any], metric: str
+) -> Tuple[pd.DataFrame, Dict[str, Any]]:
+    """Aggregate customer results by category group with rolling windows."""
+
+    normalized = _normalize_filter_payload(filters)
+    normalized["metric"] = metric
+    cache_key = _cache_key_from_filters("customer_category", normalized)
+    cached = _cache_get(_customer_category_cache, cache_key)
+    if cached is not None:
+        frame, meta = cached
+        return frame.copy(deep=False), dict(meta)
+
+    empty = pd.DataFrame(
+        columns=[
+            "Kategorijos grupe",
+            "last_value",
+            "previous_value",
+            "avg_3m",
+            "avg_6m",
+        ]
+    )
+
+    tx = fetch_customer_transactions(filters)
+    if tx.empty:
+        _cache_set(_customer_category_cache, cache_key, (empty, {}))
+        return empty, {}
+
+    years = normalized["metai"] or sorted(tx["Metai"].dropna().unique().tolist())
+    if years:
+        tx = tx[tx["Metai"].isin([int(y) for y in years])]
+
+    if tx.empty:
+        _cache_set(_customer_category_cache, cache_key, (empty, {}))
+        return empty, {}
+
+    mapping = _load_category_mapping()
+    tx = tx.merge(mapping, how="left", on="Kategorija")
+    tx["Kategorijos_grupe"] = tx["Kategorijos_grupe"].fillna("Nepriskirta")
+
+    tx["Menuo"] = tx["Menuo"].astype(str)
+    tx["Mėnuo"] = tx["Menuo"].map(MONTH_ORDER)
+    tx = tx.dropna(subset=["Mėnuo"])
+    tx["Mėnuo"] = tx["Mėnuo"].astype(int)
+
+    if tx.empty:
+        _cache_set(_customer_category_cache, cache_key, (empty, {}))
+        return empty, {}
+
+    tx["YearMonth"] = tx["Metai"] * 100 + tx["Mėnuo"]
+    last_idx = tx["YearMonth"].max()
+    if pd.isna(last_idx):
+        _cache_set(_customer_category_cache, cache_key, (empty, {}))
+        return empty, {}
+
+    last_year = int(last_idx // 100)
+    last_month = int(last_idx % 100)
+    prev_year, prev_month = _previous_month(last_year, last_month)
+
+    available_periods = set(
+        (int(row.Metai), int(row.Mėnuo))
+        for row in tx[["Metai", "Mėnuo"]].drop_duplicates().itertuples(index=False)
+    )
+
+    prev_period = (prev_year, prev_month) if (prev_year, prev_month) in available_periods else None
+
+    grouped = (
+        tx.groupby(["Kategorijos_grupe", "Metai", "Mėnuo"], as_index=False)[
+            ["Apyvarta", "Pajamos", "Kiekis"]
+        ]
+        .sum()
+    )
+
+    group_records: Dict[str, Dict[Tuple[int, int], Dict[str, float]]] = {}
+    for row in grouped.itertuples(index=False):
+        key = row.Kategorijos_grupe
+        group_records.setdefault(key, {})[(int(row.Metai), int(row.Mėnuo))] = {
+            "Apyvarta": float(row.Apyvarta),
+            "Pajamos": float(row.Pajamos),
+            "Kiekis": float(row.Kiekis),
+        }
+
+    def periods_window(length: int) -> List[Tuple[int, int]]:
+        periods: List[Tuple[int, int]] = []
+        year, month = last_year, last_month
+        for _ in range(length):
+            periods.append((year, month))
+            year, month = _previous_month(year, month)
+        return periods
+
+    window3 = [p for p in periods_window(3) if p in available_periods]
+    window6 = [p for p in periods_window(6) if p in available_periods]
+
+    rows: List[Dict[str, Any]] = []
+    for group, values in group_records.items():
+        last_entries = [values[p] for p in [(last_year, last_month)] if p in values]
+        prev_entries = [values[p] for p in [prev_period] if p and p in values]
+        win3_entries = [values[p] for p in window3 if p in values]
+        win6_entries = [values[p] for p in window6 if p in values]
+
+        last_value = _metric_sum_for_entries(metric, last_entries, average=False)
+        previous_value = _metric_sum_for_entries(metric, prev_entries, average=False)
+        avg_3m = _metric_sum_for_entries(metric, win3_entries, average=True)
+        avg_6m = _metric_sum_for_entries(metric, win6_entries, average=True)
+
+        rows.append(
+            {
+                "Kategorijos grupe": group,
+                "last_value": last_value,
+                "previous_value": previous_value,
+                "avg_3m": avg_3m,
+                "avg_6m": avg_6m,
+            }
+        )
+
+    if not rows:
+        _cache_set(_customer_category_cache, cache_key, (empty, {}))
+        return empty, {}
+
+    result = pd.DataFrame(rows)
+    if not result.empty:
+        result.sort_values(
+            by="last_value",
+            ascending=False,
+            inplace=True,
+            kind="mergesort",
+        )
+
+    metadata = {
+        "last_period": (last_year, last_month),
+        "previous_period": prev_period,
+    }
+
+    _cache_set(_customer_category_cache, cache_key, (result.copy(deep=False), metadata))
+    return result.copy(deep=False), metadata
 
 
 # ==================== Helper Functions ====================

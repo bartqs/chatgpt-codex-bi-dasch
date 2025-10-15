@@ -2,6 +2,7 @@ import dash
 import pandas as pd
 from dash import Input, Output, State, callback, dash_table, dcc, html
 import plotly.graph_objects as go
+from typing import Optional, Tuple
 
 from data.app_data import (
     CUSTOMER_COLORWAY,
@@ -17,6 +18,7 @@ from data.app_data import (
     _fmt_eur,
     _fmt_pct,
     _fmt_qty,
+    compute_customer_category_group_summary,
     compute_customer_monthly_aggregation,
     get_customer_filter_frame,
     get_customer_year_options,
@@ -80,6 +82,34 @@ BASE_CELL_CONDITIONAL = [
         "minWidth": "90px",
         "width": "90px",
         "maxWidth": "110px",
+    }
+]
+
+
+CATEGORY_TABLE_STYLE = {
+    "overflowX": "auto",
+    "overflowY": "auto",
+    "maxHeight": "420px",
+    "border": f"1px solid {IC_GRAY}",
+    "borderRadius": "10px",
+    "minWidth": "100%",
+}
+
+CATEGORY_CELL_STYLE = {
+    "padding": "6px 10px",
+    "fontFamily": "Arial",
+    "fontSize": "13px",
+    "textAlign": "right",
+    "whiteSpace": "nowrap",
+}
+
+CATEGORY_CELL_CONDITIONAL = [
+    {
+        "if": {"column_id": "Kategorijos grupe"},
+        "textAlign": "left",
+        "minWidth": "200px",
+        "width": "200px",
+        "maxWidth": "260px",
     }
 ]
 
@@ -350,8 +380,100 @@ def layout():
         },
     )
 
+    category_section = html.Div(
+        [
+            html.Div(
+                [
+                    html.Div(
+                        "Pardavimai pagal Kategorijos grupę",
+                        style={"fontWeight": 700, "color": IC_NAVY},
+                    ),
+                    html.Div(
+                        [
+                            html.Label("Matas", style={"fontSize": "13px", "marginRight": "6px"}),
+                            dcc.Dropdown(
+                                options=[{"label": m, "value": m} for m in CUSTOMER_METRICS],
+                                value="APYVARTA",
+                                clearable=False,
+                                id="customer-category-metric",
+                                style={"minWidth": "150px"},
+                            ),
+                            html.Button(
+                                "Eksportuoti į Excel",
+                                id="customer-category-export",
+                                n_clicks=0,
+                                title="Eksportuoti į Excel",
+                                style={
+                                    "marginLeft": "12px",
+                                    "background": IC_NAVY,
+                                    "color": IC_WHITE,
+                                    "border": "none",
+                                    "padding": "6px 14px",
+                                    "borderRadius": "6px",
+                                    "fontWeight": 600,
+                                    "cursor": "pointer",
+                                },
+                            ),
+                        ],
+                        style={
+                            "marginLeft": "auto",
+                            "display": "flex",
+                            "alignItems": "center",
+                            "gap": "6px",
+                        },
+                    ),
+                ],
+                style={
+                    "display": "flex",
+                    "alignItems": "center",
+                    "gap": "12px",
+                    "marginBottom": "8px",
+                },
+            ),
+            dash_table.DataTable(
+                id="customer-category-table",
+                columns=[],
+                data=[],
+                style_table=dict(CATEGORY_TABLE_STYLE),
+                style_cell=dict(CATEGORY_CELL_STYLE),
+                style_cell_conditional=[dict(item) for item in CATEGORY_CELL_CONDITIONAL],
+                style_header={
+                    "backgroundColor": IC_NAVY,
+                    "color": IC_WHITE,
+                    "fontWeight": 700,
+                    "textAlign": "center",
+                    "padding": "6px 8px",
+                },
+                style_data_conditional=[
+                    {"if": {"row_index": "odd"}, "backgroundColor": "#F7F9FC"},
+                    {
+                        "if": {"column_id": "Kategorijos grupe"},
+                        "textAlign": "left",
+                    },
+                ],
+                fixed_columns={"headers": True, "data": 1},
+            ),
+            dcc.Download(id="customer-category-export-download"),
+        ],
+        id="customer-category-wrapper",
+        style={
+            "background": IC_WHITE,
+            "border": f"1px solid {IC_GRAY}",
+            "borderRadius": "10px",
+            "padding": "16px",
+            "margin": "0 16px 32px",
+        },
+    )
+
     return html.Div(
-        [filter_row, status_bar, empty_state, chart_section, table_section],
+        [
+            filter_row,
+            status_bar,
+            empty_state,
+            chart_section,
+            table_section,
+            category_section,
+        ],
         style={"background": IC_BG, "minHeight": "100vh"},
     )
 
@@ -476,6 +598,35 @@ def _format_hover_yoy(metric, yoy_pct, yoy_diff):
     return text, _get_yoy_color(yoy_pct)
 
 
+def _format_period_label(period: Optional[Tuple[int, int]]) -> Optional[str]:
+    if not period:
+        return None
+    year, month = period
+    if year is None or month is None:
+        return None
+    try:
+        month = int(month)
+    except (TypeError, ValueError):
+        return str(period)
+    if 1 <= month <= 12:
+        return f"{int(year)}-{month:02d}"
+    return f"{int(year)}-{month}"
+
+
+def _format_category_value(metric: str, value: Optional[float]) -> str:
+    if value is None or pd.isna(value):
+        return "—"
+    if metric in ("APYVARTA", "PAJAMOS"):
+        text = _fmt_eur(value)
+        return text if text != "-" else "—"
+    if metric == "KIEKIS":
+        text = _fmt_qty(value)
+        return text if text != "-" else "—"
+    if metric == "MARŽA %":
+        return f"{float(value):.2f} %"
+    return "—"
+
+
 def _build_status_text(managers, clients, codes, years, metric):
     def join_values(values):
         if not values:
@@ -529,11 +680,12 @@ def update_codes(managers, clients):
     Output("customer-code", "value"),
     Output("customer-years", "value"),
     Output("customer-metric", "value"),
+    Output("customer-category-metric", "value"),
     Input("customer-reset", "n_clicks"),
     prevent_initial_call=True,
 )
 def reset_filters(n_clicks):
-    return [], [], [], DEFAULT_YEARS, "APYVARTA"
+    return [], [], [], DEFAULT_YEARS, "APYVARTA", "APYVARTA"
 
 
 @callback(
@@ -547,6 +699,7 @@ def reset_filters(n_clicks):
     Output("customer-empty", "style"),
     Output("customer-chart-wrapper", "style"),
     Output("customer-table-wrapper", "style"),
+    Output("customer-category-wrapper", "style"),
     Output("customer-status-text", "children"),
     Input("customer-manager", "value"),
     Input("customer-client", "value"),
@@ -583,6 +736,13 @@ def update_customer_view(managers, clients, codes, years, metric, chart_type):
         "padding": "16px",
         "margin": "0 16px 24px",
     }
+    category_style = {
+        "background": IC_WHITE,
+        "border": f"1px solid {IC_GRAY}",
+        "borderRadius": "10px",
+        "padding": "16px",
+        "margin": "0 16px 32px",
+    }
 
     table_style_props = dict(BASE_TABLE_STYLE)
     cell_style = dict(BASE_CELL_STYLE)
@@ -599,6 +759,7 @@ def update_customer_view(managers, clients, codes, years, metric, chart_type):
             cell_conditional,
             empty_children,
             empty_style,
+            hidden,
             hidden,
             hidden,
             status_text,
@@ -624,6 +785,7 @@ def update_customer_view(managers, clients, codes, years, metric, chart_type):
             cell_conditional,
             NO_DATA_MESSAGE,
             empty_style,
+            hidden,
             hidden,
             hidden,
             status_text,
@@ -906,6 +1068,7 @@ def update_customer_view(managers, clients, codes, years, metric, chart_type):
         hidden,
         chart_style,
         table_style,
+        category_style,
         status_text,
     )
 
@@ -968,4 +1131,135 @@ def export_customer_data(n_clicks, managers, clients, codes, years, metric):
 
     client_name = selected_clients[0].replace(" ", "_")
     filename = f"kliento_apzvalga_{client_name}_{metric}.xlsx"
+    return dcc.send_data_frame(export_df.to_excel, filename, index=False)
+
+
+@callback(
+    Output("customer-category-table", "columns"),
+    Output("customer-category-table", "data"),
+    Output("customer-category-table", "style_table"),
+    Output("customer-category-table", "style_cell"),
+    Output("customer-category-table", "style_cell_conditional"),
+    Output("customer-category-table", "style_data_conditional"),
+    Input("customer-category-metric", "value"),
+    Input("customer-manager", "value"),
+    Input("customer-client", "value"),
+    Input("customer-code", "value"),
+    Input("customer-years", "value"),
+)
+def update_category_table(metric, managers, clients, codes, years):
+    metric = metric or "APYVARTA"
+    table_style = dict(CATEGORY_TABLE_STYLE)
+    cell_style = dict(CATEGORY_CELL_STYLE)
+    cell_conditional = [dict(item) for item in CATEGORY_CELL_CONDITIONAL]
+    data_conditional = [
+        {"if": {"row_index": "odd"}, "backgroundColor": "#F7F9FC"},
+        {"if": {"column_id": "Kategorijos grupe"}, "textAlign": "left"},
+    ]
+    for col_id in ["last_value", "previous_value", "avg_3m", "avg_6m"]:
+        cell_conditional.append(
+            {
+                "if": {"column_id": col_id},
+                "minWidth": "140px",
+                "width": "140px",
+                "maxWidth": "150px",
+            }
+        )
+        data_conditional.append(
+            {
+                "if": {"filter_query": f'{{{col_id}}} = "—"', "column_id": col_id},
+                "color": "#6c757d",
+            }
+        )
+
+    selected_clients = clients if isinstance(clients, list) else (clients or [])
+    if not selected_clients or len(selected_clients) != 1:
+        return [], [], table_style, cell_style, cell_conditional, data_conditional
+
+    filters = {
+        "vadybininkas": managers if isinstance(managers, list) else (managers or []),
+        "klientas": selected_clients,
+        "kliento_kodas": codes if isinstance(codes, list) else (codes or []),
+        "metai": years if isinstance(years, list) else (years or []),
+    }
+
+    frame, metadata = compute_customer_category_group_summary(filters, metric)
+    if frame.empty:
+        return [], [], table_style, cell_style, cell_conditional, data_conditional
+
+    last_label = _format_period_label(metadata.get("last_period"))
+    prev_label = _format_period_label(metadata.get("previous_period"))
+
+    columns = [
+        {"name": "Kategorijos grupe", "id": "Kategorijos grupe"},
+        {
+            "name": "Paskutinis mėnuo" + (f" ({last_label})" if last_label else ""),
+            "id": "last_value",
+        },
+        {
+            "name": "Ankstesnis mėnuo" + (f" ({prev_label})" if prev_label else ""),
+            "id": "previous_value",
+        },
+        {"name": "Vidurkis 3 mėn.", "id": "avg_3m"},
+        {"name": "Vidurkis 6 mėn.", "id": "avg_6m"},
+    ]
+
+    formatted = []
+    for _, row in frame.iterrows():
+        formatted.append(
+            {
+                "Kategorijos grupe": row["Kategorijos grupe"],
+                "last_value": _format_category_value(metric, row["last_value"]),
+                "previous_value": _format_category_value(metric, row["previous_value"]),
+                "avg_3m": _format_category_value(metric, row["avg_3m"]),
+                "avg_6m": _format_category_value(metric, row["avg_6m"]),
+            }
+        )
+
+    return columns, formatted, table_style, cell_style, cell_conditional, data_conditional
+
+
+@callback(
+    Output("customer-category-export-download", "data"),
+    Input("customer-category-export", "n_clicks"),
+    State("customer-category-metric", "value"),
+    State("customer-manager", "value"),
+    State("customer-client", "value"),
+    State("customer-code", "value"),
+    State("customer-years", "value"),
+    prevent_initial_call=True,
+)
+def export_category_table(n_clicks, metric, managers, clients, codes, years):
+    metric = metric or "APYVARTA"
+    selected_clients = clients if isinstance(clients, list) else (clients or [])
+    if not selected_clients or len(selected_clients) != 1:
+        return dash.no_update
+
+    filters = {
+        "vadybininkas": managers if isinstance(managers, list) else (managers or []),
+        "klientas": selected_clients,
+        "kliento_kodas": codes if isinstance(codes, list) else (codes or []),
+        "metai": years if isinstance(years, list) else (years or []),
+    }
+
+    frame, metadata = compute_customer_category_group_summary(filters, metric)
+    if frame.empty:
+        return dash.no_update
+
+    last_label = _format_period_label(metadata.get("last_period"))
+    prev_label = _format_period_label(metadata.get("previous_period"))
+
+    export_df = frame.copy()
+    export_df = export_df.rename(
+        columns={
+            "Kategorijos grupe": "Kategorijos grupe",
+            "last_value": "Paskutinis mėnuo" + (f" ({last_label})" if last_label else ""),
+            "previous_value": "Ankstesnis mėnuo" + (f" ({prev_label})" if prev_label else ""),
+            "avg_3m": "Vidurkis 3 mėn.",
+            "avg_6m": "Vidurkis 6 mėn.",
+        }
+    )
+
+    client_name = selected_clients[0].replace(" ", "_")
+    filename = f"kategorijos_grupe_{client_name}_{metric}.xlsx"
     return dcc.send_data_frame(export_df.to_excel, filename, index=False)

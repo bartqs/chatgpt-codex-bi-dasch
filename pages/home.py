@@ -75,6 +75,20 @@ def layout():
                     html.Div(
                         [
                             html.Div(
+                                "Klientų apžvalga",
+                                style={"fontSize": "18px", "fontWeight": 700, "color": IC_NAVY},
+                            ),
+                            html.Div(
+                                "Segmentų rezultatai ir mėnesinė dinamika.",
+                                style={"marginTop": "8px", "color": "#444"},
+                            ),
+                            dcc.Link("Atidaryti", href="/customers", style=link_style),
+                        ],
+                        style=card_style,
+                    ),
+                    html.Div(
+                        [
+                            html.Div(
                                 "Produktų analizė",
                                 style={"fontSize": "18px", "fontWeight": 700, "color": IC_NAVY},
                             ),

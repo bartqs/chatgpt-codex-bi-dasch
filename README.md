@@ -27,9 +27,13 @@ Follow the steps below to run the application locally:
 Ensure that the MySQL database referenced in the application is accessible
 before launching the app.
 
-## Product page
+## Puslapiai
 
-Navigate to `/product` to analyse manufacturer performance. Use the year and
-branch filters (defaulting to the latest year and branches L51/L52) to refresh
-the manufacturer table. Selecting a manufacturer loads a combined turnover,
-margin, and quantity chart for the available months.
+* `/overview` – pagrindinė suvestinė.
+* `/sales-advisor` – pardavėjų patarėjas.
+* `/customers` – klientų (segmentų) apžvalga.
+* `/product` – gamintojų analizė pagal metus ir filialus.
+
+`/product` puslapis leidžia analizuoti gamintojų rezultatus, pasirenkant metus
+ir filialus (numatytai L51 ir L52). Pasirinkus gamintoją pateikiama kombinuota
+apyvartos, maržos ir kiekių dinamika.

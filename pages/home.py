@@ -86,6 +86,20 @@ def layout():
                         ],
                         style=card_style,
                     ),
+                    html.Div(
+                        [
+                            html.Div(
+                                "Product Analysis",
+                                style={"fontSize": "18px", "fontWeight": 700, "color": IC_NAVY},
+                            ),
+                            html.Div(
+                                "Analizuokite gamintojų rezultatus ir maržas.",
+                                style={"marginTop": "8px", "color": "#444"},
+                            ),
+                            dcc.Link("Atidaryti", href="/product-analysis", style=link_style),
+                        ],
+                        style=card_style,
+                    ),
                 ],
                 style={"display": "flex", "gap": "20px", "flexWrap": "wrap", "justifyContent": "center"},
             ),

@@ -5,13 +5,13 @@ from __future__ import annotations
 import math
 import time
 from functools import lru_cache
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
 from dash import Input, Output, State, callback, no_update
 from plotly import graph_objects as go
-from sqlalchemy import bindparam, text
+from sqlalchemy import text
 
 from data.app_data import (
     IC_GRAY,
@@ -45,6 +45,24 @@ def _cache_get(cache: Dict[Tuple[Any, ...], Tuple[float, pd.DataFrame]], key: Tu
 
 def _cache_set(cache: Dict[Tuple[Any, ...], Tuple[float, pd.DataFrame]], key: Tuple[Any, ...], value: pd.DataFrame) -> None:
     cache[key] = (time.time(), value.copy(deep=False))
+
+
+def _build_in_clause(column: str, values: Iterable[Any], param_prefix: str) -> Tuple[str, Dict[str, Any]]:
+    """Build a parameterized IN clause compatible with MySQL without expanding params."""
+
+    placeholders: List[str] = []
+    params: Dict[str, Any] = {}
+    for idx, value in enumerate(values):
+        param_name = f"{param_prefix}_{idx}"
+        placeholders.append(f":{param_name}")
+        params[param_name] = value
+
+    if not placeholders:
+        # No values -> return an always-false clause to avoid SQL syntax errors.
+        return "1 = 0", {}
+
+    clause = f"{column} IN ({', '.join(placeholders)})"
+    return clause, params
 
 
 @lru_cache(maxsize=1)
@@ -154,6 +172,8 @@ def _fetch_table_data(year: Optional[int], branches: Sequence[str]) -> pd.DataFr
     quantity_col = _require_column("quantity")
     manufacturer_expr = _manufacturer_expr()
 
+    branch_clause, branch_params = _build_in_clause(branch_col, branches, "branch")
+
     stmt = text(
         f"""
         SELECT
@@ -163,12 +183,12 @@ def _fetch_table_data(year: Optional[int], branches: Sequence[str]) -> pd.DataFr
             SUM(CAST({quantity_col} AS DECIMAL(18,2))) AS Kiekis
         FROM sales
         WHERE CAST({year_col} AS UNSIGNED) = :year
-          AND {branch_col} IN :branches
+          AND {branch_clause}
         GROUP BY {manufacturer_expr}
         """
-    ).bindparams(bindparam("branches", expanding=True))
+    )
 
-    params = {"year": int(year), "branches": list(branches)}
+    params: Dict[str, Any] = {"year": int(year), **branch_params}
 
     with engine.connect() as conn:
         df = pd.read_sql(stmt, conn, params=params)
@@ -215,8 +235,9 @@ def _fetch_monthly_data(
     quantity_col = _require_column("quantity")
     manufacturer_expr = _manufacturer_expr()
 
-    where_parts = [f"CAST({year_col} AS UNSIGNED) = :year", f"{branch_col} IN :branches"]
-    params: Dict[str, Any] = {"year": int(year), "branches": list(branches)}
+    branch_clause, branch_params = _build_in_clause(branch_col, branches, "branch")
+    where_parts = [f"CAST({year_col} AS UNSIGNED) = :year", branch_clause]
+    params: Dict[str, Any] = {"year": int(year), **branch_params}
 
     if normalized_manufacturer:
         where_parts.append(f"{manufacturer_expr} = :manufacturer")
@@ -233,10 +254,7 @@ def _fetch_monthly_data(
         WHERE {' AND '.join(where_parts)}
         GROUP BY {month_col}
         """
-    ).bindparams(bindparam("branches", expanding=True))
-
-    if normalized_manufacturer:
-        stmt = stmt.bindparams(bindparam("manufacturer"))
+    )
 
     with engine.connect() as conn:
         df = pd.read_sql(stmt, conn, params=params)
@@ -261,11 +279,17 @@ def _fetch_monthly_data(
     df = full_months.merge(df, on="Month", how="left")
     df[["Apyvarta", "Pajamos", "Kiekis"]] = df[["Apyvarta", "Pajamos", "Kiekis"]].fillna(0.0)
 
+    df["Apyvarta"] = pd.to_numeric(df["Apyvarta"], errors="coerce").fillna(0.0)
+    df["Pajamos"] = pd.to_numeric(df["Pajamos"], errors="coerce").fillna(0.0)
+    df["Kiekis"] = pd.to_numeric(df["Kiekis"], errors="coerce").fillna(0.0)
+
     df["Marža %"] = np.where(
         df["Apyvarta"] != 0,
         (df["Pajamos"] / df["Apyvarta"]) * 100.0,
         0.0,
     )
+
+    df["Month"] = df["Month"].astype(int)
 
     _cache_set(_CHART_CACHE, key, df)
     return df

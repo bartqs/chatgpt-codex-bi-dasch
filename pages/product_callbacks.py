@@ -212,8 +212,7 @@ def _fetch_monthly_data(
 ) -> pd.DataFrame:
     if not year or not branches:
         base = pd.DataFrame({"Month": range(1, 13)})
-        base[["Apyvarta", "Pajamos", "Kiekis"]] = 0.0
-        base["Marža %"] = 0.0
+        base[["Apyvarta", "Pajamos", "Kiekis", "Marža %"]] = np.nan
         return base
 
     normalized_manufacturer = str(manufacturer) if manufacturer else None
@@ -261,8 +260,7 @@ def _fetch_monthly_data(
 
     if df.empty:
         base = pd.DataFrame({"Month": range(1, 13)})
-        base[["Apyvarta", "Pajamos", "Kiekis"]] = 0
-        base["Marža %"] = 0.0
+        base[["Apyvarta", "Pajamos", "Kiekis", "Marža %"]] = np.nan
         _cache_set(_CHART_CACHE, key, base)
         return base
 
@@ -277,16 +275,17 @@ def _fetch_monthly_data(
 
     full_months = pd.DataFrame({"Month": list(range(1, 13))})
     df = full_months.merge(df, on="Month", how="left")
-    df[["Apyvarta", "Pajamos", "Kiekis"]] = df[["Apyvarta", "Pajamos", "Kiekis"]].fillna(0.0)
 
-    df["Apyvarta"] = pd.to_numeric(df["Apyvarta"], errors="coerce").fillna(0.0)
-    df["Pajamos"] = pd.to_numeric(df["Pajamos"], errors="coerce").fillna(0.0)
-    df["Kiekis"] = pd.to_numeric(df["Kiekis"], errors="coerce").fillna(0.0)
+    df["Apyvarta"] = pd.to_numeric(df["Apyvarta"], errors="coerce")
+    df["Pajamos"] = pd.to_numeric(df["Pajamos"], errors="coerce")
+    df["Kiekis"] = pd.to_numeric(df["Kiekis"], errors="coerce")
 
+    with np.errstate(divide="ignore", invalid="ignore"):
+        margin = (df["Pajamos"] / df["Apyvarta"]) * 100.0
     df["Marža %"] = np.where(
-        df["Apyvarta"] != 0,
-        (df["Pajamos"] / df["Apyvarta"]) * 100.0,
-        0.0,
+        (df["Apyvarta"].notna()) & (df["Apyvarta"] != 0),
+        margin,
+        np.where(df["Apyvarta"] == 0, 0.0, np.nan),
     )
 
     df["Month"] = df["Month"].astype(int)
@@ -299,9 +298,48 @@ def _build_chart(df: pd.DataFrame, manufacturer: Optional[str], year: Optional[i
     title = "All manufacturers" if not manufacturer else manufacturer
     subtitle = f"Year {year}" if year else ""
 
-    custom_currency = df["Apyvarta"].apply(_format_currency).to_numpy()
-    custom_margin = df["Marža %"].apply(lambda v: f"{v:.2f} %").to_numpy()
-    custom_quantity = df["Kiekis"].apply(_format_quantity).to_numpy()
+    def _display_or_na(series: pd.Series, formatter) -> np.ndarray:
+        return np.array(
+            ["No data" if pd.isna(val) else formatter(val) for val in series],
+            dtype=object,
+        )[:, None]
+
+    custom_currency = _display_or_na(df["Apyvarta"], _format_currency)
+    custom_margin = _display_or_na(df["Marža %"], lambda v: f"{v:.2f} %")
+    custom_quantity = _display_or_na(df["Kiekis"], _format_quantity)
+
+    margin_text = [
+        None if pd.isna(val) else f"{val:.1f}%"
+        for val in df["Marža %"].to_numpy()
+    ]
+    quantity_text = [
+        None if pd.isna(val) else _format_quantity(val)
+        for val in df["Kiekis"].to_numpy()
+    ]
+
+    def _axis_range(values: pd.Series) -> Optional[List[float]]:
+        clean = pd.to_numeric(values, errors="coerce").dropna()
+        if clean.empty:
+            return None
+        min_val = clean.min()
+        max_val = clean.max()
+        if math.isclose(min_val, max_val):
+            padding = abs(min_val) * 0.1 if min_val != 0 else 1.0
+            return [min_val - padding, max_val + padding]
+        lower = min_val * (0.9 if min_val >= 0 else 1.1)
+        upper = max_val * (1.1 if max_val >= 0 else 0.9)
+        if math.isclose(lower, upper):
+            padding = abs(lower) * 0.1 if lower != 0 else 1.0
+            lower -= padding
+            upper += padding
+        return [lower, upper]
+
+    marza_range = _axis_range(df["Marža %"]) or None
+    kiekis_range = _axis_range(df["Kiekis"]) or None
+
+    missing_months = df.loc[
+        df[["Apyvarta", "Pajamos", "Kiekis", "Marža %"]].isna().all(axis=1), "Month"
+    ].tolist()
 
     fig = go.Figure()
     fig.add_bar(
@@ -309,7 +347,7 @@ def _build_chart(df: pd.DataFrame, manufacturer: Optional[str], year: Optional[i
         y=df["Apyvarta"],
         name="Apyvarta (€)",
         marker_color=IC_NAVY,
-        customdata=np.array(custom_currency)[:, None],
+        customdata=custom_currency,
         hovertemplate="Mėnuo %{x}<br>Apyvarta: %{customdata[0]}<extra></extra>",
         yaxis="y",
     )
@@ -317,34 +355,63 @@ def _build_chart(df: pd.DataFrame, manufacturer: Optional[str], year: Optional[i
         go.Scatter(
             x=df["Month"],
             y=df["Marža %"],
-            mode="lines+markers",
+            mode="lines+markers+text",
             name="Marža %",
-            line=dict(color=IC_RED, width=2),
-            marker=dict(size=6),
-            customdata=np.array(custom_margin)[:, None],
+            line=dict(color=IC_RED, width=3),
+            marker=dict(size=8, color=IC_RED),
+            text=margin_text,
+            textposition="top center",
+            textfont=dict(color=IC_RED, size=11),
+            customdata=custom_margin,
             hovertemplate="Mėnuo %{x}<br>Marža: %{customdata[0]}<extra></extra>",
             yaxis="y2",
+            connectgaps=False,
         )
     )
     fig.add_trace(
         go.Scatter(
             x=df["Month"],
             y=df["Kiekis"],
-            mode="lines+markers",
+            mode="lines+markers+text",
             name="Kiekis",
-            line=dict(color="#2A9D8F", width=2),
-            marker=dict(size=6),
-            customdata=np.array(custom_quantity)[:, None],
+            line=dict(color="#2A9D8F", width=3, dash="dot"),
+            marker=dict(size=8, color="#2A9D8F"),
+            text=quantity_text,
+            textposition="bottom right",
+            textfont=dict(color="#2A9D8F", size=11),
+            customdata=custom_quantity,
             hovertemplate="Mėnuo %{x}<br>Kiekis: %{customdata[0]}<extra></extra>",
             yaxis="y3",
+            connectgaps=False,
         )
     )
 
-    fig.update_layout(
+    if missing_months:
+        for month in missing_months:
+            fig.add_vrect(
+                x0=month - 0.5,
+                x1=month + 0.5,
+                fillcolor="rgba(180, 180, 180, 0.15)",
+                layer="below",
+                line_width=0,
+            )
+        fig.add_trace(
+            go.Scatter(
+                x=missing_months,
+                y=[0] * len(missing_months),
+                mode="markers",
+                marker=dict(symbol="x", size=10, opacity=0),
+                hovertemplate="Mėnuo %{x}<br>No data<extra></extra>",
+                showlegend=False,
+                yaxis="y",
+            )
+        )
+
+    layout_kwargs = dict(
         template="plotly_white",
         title=dict(text=f"{title} {subtitle}".strip(), x=0.02, y=0.95),
         margin=dict(t=60, r=80, l=60, b=60),
-        legend=dict(orientation="h", x=1, xanchor="right", y=1.15),
+        legend=dict(orientation="h", x=1, xanchor="right", y=1.12, yanchor="bottom"),
         xaxis=dict(
             title="Month Number",
             tickmode="linear",
@@ -372,9 +439,17 @@ def _build_chart(df: pd.DataFrame, manufacturer: Optional[str], year: Optional[i
             anchor="free",
             position=0.98,
             title_standoff=10,
+            showticklabels=False,
         ),
         hovermode="x unified",
     )
+
+    if marza_range:
+        layout_kwargs["yaxis2"]["range"] = marza_range
+    if kiekis_range:
+        layout_kwargs["yaxis3"]["range"] = kiekis_range
+
+    fig.update_layout(**layout_kwargs)
 
     return fig
 

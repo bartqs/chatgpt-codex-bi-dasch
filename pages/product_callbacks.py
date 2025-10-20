@@ -360,7 +360,7 @@ def _build_chart(df: pd.DataFrame, manufacturer: Optional[str], year: Optional[i
             showgrid=False,
             tickformat=".1f",
             anchor="free",
-            position=0.98,
+            position=0.9,
             title_standoff=10,
         ),
         yaxis3=dict(
@@ -370,7 +370,7 @@ def _build_chart(df: pd.DataFrame, manufacturer: Optional[str], year: Optional[i
             showgrid=False,
             tickformat=".0f",
             anchor="free",
-            position=1.0,
+            position=0.98,
             title_standoff=10,
         ),
         hovermode="x unified",

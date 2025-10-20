@@ -359,7 +359,9 @@ def _build_chart(df: pd.DataFrame, manufacturer: Optional[str], year: Optional[i
             side="right",
             showgrid=False,
             tickformat=".1f",
-            position=1.0,
+            anchor="free",
+            position=0.98,
+            title_standoff=10,
         ),
         yaxis3=dict(
             title="Kiekis",
@@ -367,7 +369,9 @@ def _build_chart(df: pd.DataFrame, manufacturer: Optional[str], year: Optional[i
             side="right",
             showgrid=False,
             tickformat=".0f",
-            position=1.06,
+            anchor="free",
+            position=1.0,
+            title_standoff=10,
         ),
         hovermode="x unified",
     )

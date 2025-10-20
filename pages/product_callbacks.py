@@ -298,26 +298,75 @@ def _build_chart(df: pd.DataFrame, manufacturer: Optional[str], year: Optional[i
     title = "All manufacturers" if not manufacturer else manufacturer
     subtitle = f"Year {year}" if year else ""
 
-    def _display_or_na(series: pd.Series, formatter) -> np.ndarray:
-        return np.array(
-            ["No data" if pd.isna(val) else formatter(val) for val in series],
-            dtype=object,
-        )[:, None]
+    df_plot = df.copy()
+    value_columns = [col for col in ["Apyvarta", "Pajamos", "Kiekis", "Marža %"] if col in df_plot]
+    if value_columns:
+        df_plot = df_plot.loc[~df_plot[value_columns].isna().all(axis=1)]
+    df_plot = df_plot.sort_values("Month").reset_index(drop=True)
 
-    custom_currency = _display_or_na(df["Apyvarta"], _format_currency)
-    custom_margin = _display_or_na(df["Marža %"], lambda v: f"{v:.2f} %")
-    custom_quantity = _display_or_na(df["Kiekis"], _format_quantity)
+    months = df_plot["Month"].tolist() if not df_plot.empty else []
 
-    margin_text = [
-        None if pd.isna(val) else f"{val:.1f}%"
-        for val in df["Marža %"].to_numpy()
-    ]
-    quantity_text = [
-        None if pd.isna(val) else _format_quantity(val)
-        for val in df["Kiekis"].to_numpy()
-    ]
+    turnover_series = (
+        pd.to_numeric(df_plot.get("Apyvarta"), errors="coerce")
+        if not df_plot.empty
+        else pd.Series(dtype="float64")
+    )
+    margin_series = (
+        pd.to_numeric(df_plot.get("Marža %"), errors="coerce")
+        if not df_plot.empty
+        else pd.Series(dtype="float64")
+    )
+    quantity_series = (
+        pd.to_numeric(df_plot.get("Kiekis"), errors="coerce")
+        if not df_plot.empty
+        else pd.Series(dtype="float64")
+    )
+
+    def _hover_currency(value: float) -> str:
+        if pd.isna(value):
+            return "—"
+        return f"{value:,.1f}".replace(",", " ")
+
+    def _hover_margin(value: float) -> str:
+        if pd.isna(value):
+            return "—"
+        return f"{value:.1f}"
+
+    def _hover_quantity(value: float) -> str:
+        if pd.isna(value):
+            return "—"
+        return _format_quantity(value)
+
+    bar_customdata: List[List[str]] = []
+    margin_customdata: List[List[str]] = []
+    quantity_customdata: List[List[str]] = []
+    margin_labels: List[Optional[str]] = []
+    quantity_labels: List[Optional[str]] = []
+
+    for idx in range(len(df_plot)):
+        turnover_val = turnover_series.iloc[idx]
+        margin_val = margin_series.iloc[idx]
+        quantity_val = quantity_series.iloc[idx]
+
+        bar_customdata.append([
+            _hover_margin(margin_val),
+            _hover_quantity(quantity_val),
+        ])
+        margin_customdata.append([
+            _hover_currency(turnover_val),
+            _hover_quantity(quantity_val),
+        ])
+        quantity_customdata.append([
+            _hover_currency(turnover_val),
+            _hover_margin(margin_val),
+        ])
+
+        margin_labels.append(None if pd.isna(margin_val) else f"{margin_val:.1f}%")
+        quantity_labels.append(None if pd.isna(quantity_val) else _format_quantity(quantity_val))
 
     def _axis_range(values: pd.Series) -> Optional[List[float]]:
+        if values is None or values.empty:
+            return None
         clean = pd.to_numeric(values, errors="coerce").dropna()
         if clean.empty:
             return None
@@ -334,112 +383,148 @@ def _build_chart(df: pd.DataFrame, manufacturer: Optional[str], year: Optional[i
             upper += padding
         return [lower, upper]
 
-    marza_range = _axis_range(df["Marža %"]) or None
-    kiekis_range = _axis_range(df["Kiekis"]) or None
-
-    missing_months = df.loc[
-        df[["Apyvarta", "Pajamos", "Kiekis", "Marža %"]].isna().all(axis=1), "Month"
-    ].tolist()
+    marza_range = _axis_range(margin_series)
+    kiekis_range = _axis_range(quantity_series)
 
     fig = go.Figure()
     fig.add_bar(
-        x=df["Month"],
-        y=df["Apyvarta"],
+        x=months,
+        y=turnover_series.tolist(),
         name="Apyvarta (€)",
         marker_color=IC_NAVY,
-        customdata=custom_currency,
-        hovertemplate="Mėnuo %{x}<br>Apyvarta: %{customdata[0]}<extra></extra>",
+        customdata=bar_customdata,
+        hovertemplate="Mėnuo: %{x}<br>Apyvarta: %{y:,.1f} €<br>Marža: %{customdata[0]}%<br>Kiekis: %{customdata[1]}<extra></extra>",
         yaxis="y",
     )
+
     fig.add_trace(
         go.Scatter(
-            x=df["Month"],
-            y=df["Marža %"],
-            mode="lines+markers+text",
+            x=months,
+            y=margin_series.tolist(),
+            mode="lines+markers",
             name="Marža %",
             line=dict(color=IC_RED, width=3),
-            marker=dict(size=8, color=IC_RED),
-            text=margin_text,
-            textposition="top center",
-            textfont=dict(color=IC_RED, size=11),
-            customdata=custom_margin,
-            hovertemplate="Mėnuo %{x}<br>Marža: %{customdata[0]}<extra></extra>",
+            marker=dict(size=8, color=IC_RED, line=dict(color="white", width=1)),
+            customdata=margin_customdata,
+            hovertemplate="Mėnuo: %{x}<br>Apyvarta: %{customdata[0]} €<br>Marža: %{y:.1f}%<br>Kiekis: %{customdata[1]}<extra></extra>",
             yaxis="y2",
             connectgaps=False,
         )
     )
+
     fig.add_trace(
         go.Scatter(
-            x=df["Month"],
-            y=df["Kiekis"],
-            mode="lines+markers+text",
+            x=months,
+            y=quantity_series.tolist(),
+            mode="lines+markers",
             name="Kiekis",
             line=dict(color="#2A9D8F", width=3, dash="dot"),
-            marker=dict(size=8, color="#2A9D8F"),
-            text=quantity_text,
-            textposition="bottom right",
-            textfont=dict(color="#2A9D8F", size=11),
-            customdata=custom_quantity,
-            hovertemplate="Mėnuo %{x}<br>Kiekis: %{customdata[0]}<extra></extra>",
+            marker=dict(size=8, color="#2A9D8F", line=dict(color="white", width=1)),
+            customdata=quantity_customdata,
+            hovertemplate="Mėnuo: %{x}<br>Apyvarta: %{customdata[0]} €<br>Marža: %{customdata[1]}%<br>Kiekis: %{y:,.0f}<extra></extra>",
             yaxis="y3",
             connectgaps=False,
         )
     )
 
-    if missing_months:
-        for month in missing_months:
-            fig.add_vrect(
-                x0=month - 0.5,
-                x1=month + 0.5,
-                fillcolor="rgba(180, 180, 180, 0.15)",
-                layer="below",
-                line_width=0,
-            )
+    if any(label is not None for label in margin_labels):
         fig.add_trace(
             go.Scatter(
-                x=missing_months,
-                y=[0] * len(missing_months),
-                mode="markers",
-                marker=dict(symbol="x", size=10, opacity=0),
-                hovertemplate="Mėnuo %{x}<br>No data<extra></extra>",
+                x=months,
+                y=margin_series.tolist(),
+                mode="text",
+                text=margin_labels,
+                textposition="top center",
+                textfont=dict(color="white", size=14, family="Inter SemiBold, Arial, sans-serif"),
                 showlegend=False,
-                yaxis="y",
+                hoverinfo="skip",
+                yaxis="y2",
+                cliponaxis=False,
             )
         )
+        fig.add_trace(
+            go.Scatter(
+                x=months,
+                y=margin_series.tolist(),
+                mode="text",
+                text=margin_labels,
+                textposition="top center",
+                textfont=dict(color=IC_RED, size=12, family="Inter SemiBold, Arial, sans-serif"),
+                showlegend=False,
+                hoverinfo="skip",
+                yaxis="y2",
+                cliponaxis=False,
+            )
+        )
+
+    if any(label is not None for label in quantity_labels):
+        fig.add_trace(
+            go.Scatter(
+                x=months,
+                y=quantity_series.tolist(),
+                mode="text",
+                text=quantity_labels,
+                textposition="bottom right",
+                textfont=dict(color="white", size=14, family="Inter SemiBold, Arial, sans-serif"),
+                showlegend=False,
+                hoverinfo="skip",
+                yaxis="y3",
+                cliponaxis=False,
+            )
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=months,
+                y=quantity_series.tolist(),
+                mode="text",
+                text=quantity_labels,
+                textposition="bottom right",
+                textfont=dict(color="#2A9D8F", size=12, family="Inter SemiBold, Arial, sans-serif"),
+                showlegend=False,
+                hoverinfo="skip",
+                yaxis="y3",
+                cliponaxis=False,
+            )
+        )
+
+    if months:
+        x_range = [months[0] - 0.5, months[-1] + 0.5]
+    else:
+        x_range = [0.5, 12.5]
 
     layout_kwargs = dict(
         template="plotly_white",
         title=dict(text=f"{title} {subtitle}".strip(), x=0.02, y=0.95),
-        margin=dict(t=60, r=80, l=60, b=60),
-        legend=dict(orientation="h", x=1, xanchor="right", y=1.12, yanchor="bottom"),
+        margin=dict(t=60, r=70, l=60, b=60),
+        legend=dict(orientation="h", x=1, xanchor="right", y=1.08, yanchor="top"),
         xaxis=dict(
             title="Month Number",
-            tickmode="linear",
-            dtick=1,
-            range=[0.5, 12.5],
+            tickmode="array",
+            tickvals=months,
+            ticktext=[str(month) for month in months],
+            range=x_range,
             gridcolor=IC_GRAY,
         ),
-        yaxis=dict(title="Apyvarta", separatethousands=True),
+        yaxis=dict(title="Apyvarta (€)", separatethousands=True),
         yaxis2=dict(
-            title="Marža %",
             overlaying="y",
             side="right",
             showgrid=False,
-            tickformat=".1f",
-            anchor="free",
-            position=0.9,
-            title_standoff=10,
+            showticklabels=False,
+            ticks="",
+            showline=False,
+            zeroline=False,
+            title_text="",
         ),
         yaxis3=dict(
-            title="Kiekis",
             overlaying="y",
             side="right",
             showgrid=False,
-            tickformat=".0f",
-            anchor="free",
-            position=0.98,
-            title_standoff=10,
             showticklabels=False,
+            ticks="",
+            showline=False,
+            zeroline=False,
+            title_text="",
         ),
         hovermode="x unified",
     )

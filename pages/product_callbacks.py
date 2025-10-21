@@ -525,7 +525,8 @@ def _build_chart(df: pd.DataFrame, manufacturer: Optional[str], year: Optional[i
     layout_kwargs = dict(
         template="plotly_white",
         title=dict(text=f"{title} {subtitle}".strip(), x=0.02, y=0.95),
-        margin=dict(t=60, r=70, l=60, b=60),
+        height=540,
+        margin=dict(t=60, b=60, l=60, r=20),
         legend=dict(orientation="h", x=1, xanchor="right", y=1, yanchor="top"),
         xaxis=dict(
             title="Month Number",

@@ -156,8 +156,8 @@ def layout():
             html.Div(
                 dcc.Graph(
                     id=f"{PAGE_ID_PREFIX}_chart",
-                    config={"displaylogo": False},
-                    style={"height": "420px"},
+                    config={"responsive": True, "displayModeBar": False},
+                    style={"height": "540px", "width": "100%"},
                 ),
                 style={
                     "marginTop": "18px",

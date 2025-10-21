@@ -322,47 +322,27 @@ def _build_chart(df: pd.DataFrame, manufacturer: Optional[str], year: Optional[i
         else pd.Series(dtype="float64")
     )
 
-    def _hover_currency(value: float) -> str:
-        if pd.isna(value):
-            return "—"
-        return f"{value:,.1f}".replace(",", " ")
-
-    def _hover_margin(value: float) -> str:
-        if pd.isna(value):
-            return "—"
-        return f"{value:.1f}"
-
-    def _hover_quantity(value: float) -> str:
-        if pd.isna(value):
-            return "—"
-        return _format_quantity(value)
-
-    bar_customdata: List[List[str]] = []
-    margin_customdata: List[List[str]] = []
-    quantity_customdata: List[List[str]] = []
     margin_labels: List[Optional[str]] = []
     quantity_labels: List[Optional[str]] = []
+    margin_label_positions: List[str] = []
+    quantity_label_positions: List[str] = []
 
     for idx in range(len(df_plot)):
-        turnover_val = turnover_series.iloc[idx]
         margin_val = margin_series.iloc[idx]
         quantity_val = quantity_series.iloc[idx]
 
-        bar_customdata.append([
-            _hover_margin(margin_val),
-            _hover_quantity(quantity_val),
-        ])
-        margin_customdata.append([
-            _hover_currency(turnover_val),
-            _hover_quantity(quantity_val),
-        ])
-        quantity_customdata.append([
-            _hover_currency(turnover_val),
-            _hover_margin(margin_val),
-        ])
+        margin_label = None if pd.isna(margin_val) else f"{margin_val:.1f}%"
+        quantity_label = (
+            None
+            if pd.isna(quantity_val)
+            else f"{int(round(quantity_val)):,}".replace(",", " ")
+        )
 
-        margin_labels.append(None if pd.isna(margin_val) else f"{margin_val:.1f}%")
-        quantity_labels.append(None if pd.isna(quantity_val) else _format_quantity(quantity_val))
+        margin_labels.append(margin_label)
+        quantity_labels.append(quantity_label)
+
+        margin_label_positions.append("bottom center")
+        quantity_label_positions.append("top center")
 
     def _axis_range(values: pd.Series) -> Optional[List[float]]:
         if values is None or values.empty:
@@ -391,9 +371,8 @@ def _build_chart(df: pd.DataFrame, manufacturer: Optional[str], year: Optional[i
         x=months,
         y=turnover_series.tolist(),
         name="Apyvarta (€)",
-        marker_color=IC_NAVY,
-        customdata=bar_customdata,
-        hovertemplate="Mėnuo: %{x}<br>Apyvarta: %{y:,.1f} €<br>Marža: %{customdata[0]}%<br>Kiekis: %{customdata[1]}<extra></extra>",
+        marker=dict(color="#000000", opacity=0.9, line=dict(width=0)),
+        hovertemplate="Apyvarta: %{y:,.0f} €<extra></extra>",
         yaxis="y",
     )
 
@@ -403,10 +382,9 @@ def _build_chart(df: pd.DataFrame, manufacturer: Optional[str], year: Optional[i
             y=margin_series.tolist(),
             mode="lines+markers",
             name="Marža %",
-            line=dict(color=IC_RED, width=3),
-            marker=dict(size=8, color=IC_RED, line=dict(color="white", width=1)),
-            customdata=margin_customdata,
-            hovertemplate="Mėnuo: %{x}<br>Apyvarta: %{customdata[0]} €<br>Marža: %{y:.1f}%<br>Kiekis: %{customdata[1]}<extra></extra>",
+            line=dict(color="#D62828", width=3),
+            marker=dict(size=8, color="#D62828", symbol="circle"),
+            hovertemplate="Marža: %{y:.1f}%<extra></extra>",
             yaxis="y2",
             connectgaps=False,
         )
@@ -418,38 +396,31 @@ def _build_chart(df: pd.DataFrame, manufacturer: Optional[str], year: Optional[i
             y=quantity_series.tolist(),
             mode="lines+markers",
             name="Kiekis",
-            line=dict(color="#2A9D8F", width=3, dash="dot"),
-            marker=dict(size=8, color="#2A9D8F", line=dict(color="white", width=1)),
-            customdata=quantity_customdata,
-            hovertemplate="Mėnuo: %{x}<br>Apyvarta: %{customdata[0]} €<br>Marža: %{customdata[1]}%<br>Kiekis: %{y:,.0f}<extra></extra>",
+            line=dict(color="#FCA311", width=3),
+            marker=dict(size=8, color="#FCA311", symbol="circle"),
+            hovertemplate="Kiekis: %{y:,.0f}<extra></extra>",
             yaxis="y3",
             connectgaps=False,
         )
     )
 
     if any(label is not None for label in margin_labels):
+        if margin_label_positions:
+            margin_label_positions[-1] = "bottom right"
         fig.add_trace(
             go.Scatter(
                 x=months,
                 y=margin_series.tolist(),
                 mode="text",
-                text=margin_labels,
-                textposition="top center",
-                textfont=dict(color="white", size=14, family="Inter SemiBold, Arial, sans-serif"),
-                showlegend=False,
-                hoverinfo="skip",
-                yaxis="y2",
-                cliponaxis=False,
-            )
-        )
-        fig.add_trace(
-            go.Scatter(
-                x=months,
-                y=margin_series.tolist(),
-                mode="text",
-                text=margin_labels,
-                textposition="top center",
-                textfont=dict(color=IC_RED, size=12, family="Inter SemiBold, Arial, sans-serif"),
+                text=[label or "" for label in margin_labels],
+                textposition=margin_label_positions,
+                textfont=dict(
+                    color="#D62828",
+                    size=11,
+                    family="Inter SemiBold, Arial, sans-serif",
+                ),
+                textbgcolor="rgba(255,255,255,0.65)",
+                textbordercolor="rgba(0,0,0,0)",
                 showlegend=False,
                 hoverinfo="skip",
                 yaxis="y2",
@@ -458,28 +429,22 @@ def _build_chart(df: pd.DataFrame, manufacturer: Optional[str], year: Optional[i
         )
 
     if any(label is not None for label in quantity_labels):
+        if quantity_label_positions:
+            quantity_label_positions[-1] = "top right"
         fig.add_trace(
             go.Scatter(
                 x=months,
                 y=quantity_series.tolist(),
                 mode="text",
-                text=quantity_labels,
-                textposition="bottom right",
-                textfont=dict(color="white", size=14, family="Inter SemiBold, Arial, sans-serif"),
-                showlegend=False,
-                hoverinfo="skip",
-                yaxis="y3",
-                cliponaxis=False,
-            )
-        )
-        fig.add_trace(
-            go.Scatter(
-                x=months,
-                y=quantity_series.tolist(),
-                mode="text",
-                text=quantity_labels,
-                textposition="bottom right",
-                textfont=dict(color="#2A9D8F", size=12, family="Inter SemiBold, Arial, sans-serif"),
+                text=[label or "" for label in quantity_labels],
+                textposition=quantity_label_positions,
+                textfont=dict(
+                    color="#FCA311",
+                    size=11,
+                    family="Inter SemiBold, Arial, sans-serif",
+                ),
+                textbgcolor="rgba(255,255,255,0.65)",
+                textbordercolor="rgba(0,0,0,0)",
                 showlegend=False,
                 hoverinfo="skip",
                 yaxis="y3",
@@ -496,7 +461,7 @@ def _build_chart(df: pd.DataFrame, manufacturer: Optional[str], year: Optional[i
         template="plotly_white",
         title=dict(text=f"{title} {subtitle}".strip(), x=0.02, y=0.95),
         margin=dict(t=60, r=70, l=60, b=60),
-        legend=dict(orientation="h", x=1, xanchor="right", y=1.08, yanchor="top"),
+        legend=dict(orientation="v", x=1, xanchor="right", y=1, yanchor="top"),
         xaxis=dict(
             title="Month Number",
             tickmode="array",

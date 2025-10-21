@@ -347,8 +347,8 @@ def _build_chart(df: pd.DataFrame, manufacturer: Optional[str], year: Optional[i
     bar_customdata: List[List[str]] = []
     margin_customdata: List[List[str]] = []
     quantity_customdata: List[List[str]] = []
-    margin_label_points: List[Tuple[int, float, str, str]] = []
-    quantity_label_points: List[Tuple[int, float, str, str]] = []
+    margin_label_points: List[Dict[str, Any]] = []
+    quantity_label_points: List[Dict[str, Any]] = []
 
     for idx in range(len(df_plot)):
         month = months[idx]
@@ -367,17 +367,20 @@ def _build_chart(df: pd.DataFrame, manufacturer: Optional[str], year: Optional[i
 
         if not pd.isna(margin_val):
             margin_label_points.append(
-                (month, float(margin_val), formatted_margin, "bottom center")
+                {
+                    "x": month,
+                    "y": float(margin_val),
+                    "text": formatted_margin,
+                }
             )
 
         if not pd.isna(quantity_val):
             quantity_label_points.append(
-                (
-                    month,
-                    float(quantity_val),
-                    _format_quantity_hover(quantity_val),
-                    "top center",
-                )
+                {
+                    "x": month,
+                    "y": float(quantity_val),
+                    "text": _format_quantity_hover(quantity_val),
+                }
             )
 
     def _axis_range(values: pd.Series) -> Optional[List[float]]:
@@ -389,12 +392,18 @@ def _build_chart(df: pd.DataFrame, manufacturer: Optional[str], year: Optional[i
         min_val = clean.min()
         max_val = clean.max()
         if math.isclose(min_val, max_val):
-            padding = abs(min_val) * 0.1 if min_val != 0 else 1.0
+            if min_val == 0:
+                return [-1.0, 1.0]
+            padding = abs(min_val) * 0.15
             return [min_val - padding, max_val + padding]
-        lower = min_val * (0.9 if min_val >= 0 else 1.1)
-        upper = max_val * (1.1 if max_val >= 0 else 0.9)
+
+        lower_multiplier = 0.85 if min_val >= 0 else 1.15
+        upper_multiplier = 1.15 if max_val >= 0 else 0.85
+        lower = min_val * lower_multiplier
+        upper = max_val * upper_multiplier
+
         if math.isclose(lower, upper):
-            padding = abs(lower) * 0.1 if lower != 0 else 1.0
+            padding = abs(lower) * 0.15 if lower != 0 else 1.0
             lower -= padding
             upper += padding
         return [lower, upper]
@@ -458,55 +467,53 @@ def _build_chart(df: pd.DataFrame, manufacturer: Optional[str], year: Optional[i
         )
     )
 
-    if margin_label_points:
-        margin_label_points[-1] = (
-            margin_label_points[-1][0],
-            margin_label_points[-1][1],
-            margin_label_points[-1][2],
-            "bottom right",
-        )
-        fig.add_trace(
-            go.Scatter(
-                x=[point[0] for point in margin_label_points],
-                y=[point[1] for point in margin_label_points],
-                mode="text",
-                text=[point[2] for point in margin_label_points],
-                textposition=[point[3] for point in margin_label_points],
-                textfont=dict(
+    annotations: List[Dict[str, Any]] = []
+
+    for point in margin_label_points:
+        annotations.append(
+            dict(
+                x=point["x"],
+                y=point["y"],
+                xref="x",
+                yref="y2",
+                text=point["text"],
+                showarrow=False,
+                font=dict(
                     color="#D62828",
                     size=11,
                     family="Inter SemiBold, Arial, sans-serif",
                 ),
-                showlegend=False,
-                hoverinfo="skip",
-                yaxis="y2",
-                cliponaxis=False,
+                xanchor="left",
+                yanchor="top",
+                yshift=-10,
+                align="left",
+                bgcolor="rgba(0,0,0,0.05)",
+                bordercolor="rgba(0,0,0,0)",
+                borderpad=2,
             )
         )
 
-    if quantity_label_points:
-        quantity_label_points[-1] = (
-            quantity_label_points[-1][0],
-            quantity_label_points[-1][1],
-            quantity_label_points[-1][2],
-            "top right",
-        )
-        fig.add_trace(
-            go.Scatter(
-                x=[point[0] for point in quantity_label_points],
-                y=[point[1] for point in quantity_label_points],
-                mode="text",
-                text=[point[2] for point in quantity_label_points],
-                textposition=[point[3] for point in quantity_label_points],
-                textfont=dict(
+    for point in quantity_label_points:
+        annotations.append(
+            dict(
+                x=point["x"],
+                y=point["y"],
+                xref="x",
+                yref="y3",
+                text=point["text"],
+                showarrow=False,
+                font=dict(
                     color="#FCA311",
                     size=11,
                     family="Inter SemiBold, Arial, sans-serif",
                 ),
-                showlegend=False,
-                hoverinfo="skip",
-                yaxis="y3",
-                cliponaxis=False,
+                xanchor="right",
+                yanchor="bottom",
+                yshift=10,
+                align="right",
+                bgcolor="rgba(0,0,0,0.05)",
+                bordercolor="rgba(0,0,0,0)",
+                borderpad=2,
             )
         )
 
@@ -557,6 +564,8 @@ def _build_chart(df: pd.DataFrame, manufacturer: Optional[str], year: Optional[i
         layout_kwargs["yaxis2"]["range"] = marza_range
     if kiekis_range:
         layout_kwargs["yaxis3"]["range"] = kiekis_range
+    if annotations:
+        layout_kwargs["annotations"] = annotations
 
     fig.update_layout(**layout_kwargs)
 

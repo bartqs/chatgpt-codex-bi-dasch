@@ -10,7 +10,6 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 import numpy as np
 import pandas as pd
 from dash import Input, Output, State, callback, ctx, no_update
-from dash.exceptions import PreventUpdate
 from plotly import graph_objects as go
 from sqlalchemy import text
 
@@ -786,10 +785,14 @@ def populate_manufacturers(_: Any) -> List[Dict[str, str]]:
     Output(FILTER_CLIENT_ID, "value"),
     Input(f"{PAGE_ID_PREFIX}_year", "value"),
     Input(f"{PAGE_ID_PREFIX}_branch", "value"),
+    Input(CLIENT_VIEW_TOGGLE_ID, "n_clicks"),
     State(FILTER_CLIENT_ID, "value"),
 )
 def populate_clients(
-    year: Optional[int], branches: Optional[Sequence[str]], current_value: Optional[str]
+    year: Optional[int],
+    branches: Optional[Sequence[str]],
+    _toggle_clicks: Optional[int],
+    current_value: Optional[str],
 ):
     normalized_branches = _normalized_branches(branches)
     client_df = _fetch_clients(year, normalized_branches)
@@ -802,6 +805,11 @@ def populate_clients(
 
     if not options:
         return [], None
+
+    trigger_id = ctx.triggered_id
+
+    if trigger_id == CLIENT_VIEW_TOGGLE_ID:
+        return options, None
 
     valid_values = {option["value"] for option in options}
     if current_value and current_value in valid_values:
@@ -816,14 +824,21 @@ def populate_clients(
     Input(f"{PAGE_ID_PREFIX}_year", "value"),
     Input(f"{PAGE_ID_PREFIX}_branch", "value"),
     Input(FILTER_CLIENT_ID, "value"),
+    Input(CLIENT_VIEW_TOGGLE_ID, "n_clicks"),
     State(FILTER_CLIENT_CODE_ID, "value"),
 )
 def populate_client_codes(
     year: Optional[int],
     branches: Optional[Sequence[str]],
     client: Optional[str],
+    _toggle_clicks: Optional[int],
     current_codes: Optional[Sequence[str]],
 ):
+    trigger_id = ctx.triggered_id
+
+    if trigger_id == CLIENT_VIEW_TOGGLE_ID:
+        return [], []
+
     if not client:
         return [], []
 
@@ -843,7 +858,6 @@ def populate_client_codes(
         return [], []
 
     option_values = [option["value"] for option in options]
-    trigger_id = ctx.triggered_id
 
     if trigger_id in {FILTER_CLIENT_ID, f"{PAGE_ID_PREFIX}_year", f"{PAGE_ID_PREFIX}_branch"}:
         return options, option_values
@@ -855,18 +869,6 @@ def populate_client_codes(
             return options, filtered
 
     return options, option_values
-
-
-@callback(
-    Output(FILTER_CLIENT_ID, "value"),
-    Output(FILTER_CLIENT_CODE_ID, "value"),
-    Input(CLIENT_VIEW_TOGGLE_ID, "n_clicks"),
-    prevent_initial_call=True,
-)
-def disable_client_view(n_clicks: Optional[int]):
-    if not n_clicks:
-        raise PreventUpdate
-    return None, []
 
 
 @callback(

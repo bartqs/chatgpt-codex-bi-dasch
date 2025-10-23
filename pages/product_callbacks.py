@@ -9,7 +9,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
-from dash import Input, Output, State, callback, ctx, no_update
+from dash import Input, Output, State, callback, ctx
 from plotly import graph_objects as go
 from sqlalchemy import text
 
@@ -26,11 +26,17 @@ from .product_page import (
     CLIENT_VIEW_COLUMN_VISIBLE_STYLE,
     CLIENT_VIEW_TOGGLE_ID,
     CLIENT_SELECTED_MANUFACTURER_STORE_ID,
+    CONTENT_GRID_ID,
+    GRID_BASE_STYLE,
+    GRID_SINGLE_COLUMN_STYLE,
+    FILTER_BRANCH_ID,
     FILTER_CLIENT_CODE_ID,
     FILTER_CLIENT_ID,
+    FILTER_MANUFACTURER_ID,
+    FILTER_YEAR_ID,
     GENERAL_CHART_ID,
+    GENERAL_SELECTED_MANUFACTURER_STORE_ID,
     GENERAL_TABLE_ID,
-    PAGE_ID_PREFIX,
 )
 
 
@@ -485,9 +491,6 @@ def _build_chart(df: pd.DataFrame, manufacturer: Optional[str], year: Optional[i
     subtitle = f"Year {year}" if year else ""
 
     df_plot = df.copy()
-    value_columns = [col for col in ["Apyvarta", "Pajamos", "Kiekis", "Marža %"] if col in df_plot]
-    if value_columns:
-        df_plot = df_plot.loc[~df_plot[value_columns].isna().all(axis=1)]
     df_plot = df_plot.sort_values("Month").reset_index(drop=True)
 
     months = df_plot["Month"].tolist() if not df_plot.empty else []
@@ -773,8 +776,8 @@ def _build_chart(df: pd.DataFrame, manufacturer: Optional[str], year: Optional[i
 
 
 @callback(
-    Output(f"{PAGE_ID_PREFIX}_manufacturer", "options"),
-    Input(f"{PAGE_ID_PREFIX}_year", "value"),
+    Output(FILTER_MANUFACTURER_ID, "options"),
+    Input(FILTER_YEAR_ID, "value"),
 )
 def populate_manufacturers(_: Any) -> List[Dict[str, str]]:
     return [{"label": name, "value": name} for name in _all_manufacturers()]
@@ -783,8 +786,8 @@ def populate_manufacturers(_: Any) -> List[Dict[str, str]]:
 @callback(
     Output(FILTER_CLIENT_ID, "options"),
     Output(FILTER_CLIENT_ID, "value"),
-    Input(f"{PAGE_ID_PREFIX}_year", "value"),
-    Input(f"{PAGE_ID_PREFIX}_branch", "value"),
+    Input(FILTER_YEAR_ID, "value"),
+    Input(FILTER_BRANCH_ID, "value"),
     Input(CLIENT_VIEW_TOGGLE_ID, "n_clicks"),
     State(FILTER_CLIENT_ID, "value"),
 )
@@ -821,8 +824,8 @@ def populate_clients(
 @callback(
     Output(FILTER_CLIENT_CODE_ID, "options"),
     Output(FILTER_CLIENT_CODE_ID, "value"),
-    Input(f"{PAGE_ID_PREFIX}_year", "value"),
-    Input(f"{PAGE_ID_PREFIX}_branch", "value"),
+    Input(FILTER_YEAR_ID, "value"),
+    Input(FILTER_BRANCH_ID, "value"),
     Input(FILTER_CLIENT_ID, "value"),
     Input(CLIENT_VIEW_TOGGLE_ID, "n_clicks"),
     State(FILTER_CLIENT_CODE_ID, "value"),
@@ -859,7 +862,7 @@ def populate_client_codes(
 
     option_values = [option["value"] for option in options]
 
-    if trigger_id in {FILTER_CLIENT_ID, f"{PAGE_ID_PREFIX}_year", f"{PAGE_ID_PREFIX}_branch"}:
+    if trigger_id in {FILTER_CLIENT_ID, FILTER_YEAR_ID, FILTER_BRANCH_ID}:
         return options, option_values
 
     normalized_current = _normalized_codes(current_codes)
@@ -872,39 +875,36 @@ def populate_client_codes(
 
 
 @callback(
+    Output(CONTENT_GRID_ID, "style"),
     Output(CLIENT_VIEW_COLUMN_ID, "style"),
     Input(FILTER_CLIENT_ID, "value"),
 )
 def toggle_client_column(client_value: Optional[str]):
     if client_value:
-        return dict(CLIENT_VIEW_COLUMN_VISIBLE_STYLE)
-    return dict(CLIENT_VIEW_COLUMN_HIDDEN_STYLE)
+        return dict(GRID_BASE_STYLE), dict(CLIENT_VIEW_COLUMN_VISIBLE_STYLE)
+    return dict(GRID_SINGLE_COLUMN_STYLE), dict(CLIENT_VIEW_COLUMN_HIDDEN_STYLE)
 
 
 @callback(
+    Output(GENERAL_TABLE_ID, "data"),
+    Output(GENERAL_TABLE_ID, "active_cell"),
     Output(CLIENT_TABLE_ID, "data"),
     Output(CLIENT_TABLE_ID, "active_cell"),
-    Input(f"{PAGE_ID_PREFIX}_year", "value"),
-    Input(f"{PAGE_ID_PREFIX}_branch", "value"),
+    Input(FILTER_YEAR_ID, "value"),
+    Input(FILTER_BRANCH_ID, "value"),
     Input(FILTER_CLIENT_ID, "value"),
     Input(FILTER_CLIENT_CODE_ID, "value"),
 )
-def update_client_table(
+def update_tables(
     year: Optional[int],
     branches: Optional[Sequence[str]],
     client: Optional[str],
     client_codes: Optional[Sequence[str]],
 ):
-    if not client:
-        return [], None
-
     normalized_branches = _normalized_branches(branches)
-    table_df = _fetch_table_data(year, normalized_branches, client, client_codes)
 
-    if table_df.empty:
-        return [], None
-
-    records = [
+    general_df = _fetch_table_data(year, normalized_branches)
+    general_records = [
         {
             "Manufacturer": row["Manufacturer"],
             "Apyvarta": _format_currency(row["Apyvarta"]),
@@ -912,10 +912,59 @@ def update_client_table(
             "Kiekis": _format_quantity(row["Kiekis"]),
             "Marža %": _format_margin(row["Marža %"]),
         }
-        for _, row in table_df.iterrows()
+        for _, row in general_df.iterrows()
     ]
 
-    return records, None
+    client_records: List[Dict[str, Any]] = []
+    if client:
+        client_df = _fetch_table_data(year, normalized_branches, client, client_codes)
+        client_records = [
+            {
+                "Manufacturer": row["Manufacturer"],
+                "Apyvarta": _format_currency(row["Apyvarta"]),
+                "Pajamos": _format_currency(row["Pajamos"]),
+                "Kiekis": _format_quantity(row["Kiekis"]),
+                "Marža %": _format_margin(row["Marža %"]),
+            }
+            for _, row in client_df.iterrows()
+        ]
+
+    return general_records, None, client_records, None
+
+
+@callback(
+    Output(GENERAL_SELECTED_MANUFACTURER_STORE_ID, "data"),
+    Input(GENERAL_TABLE_ID, "active_cell"),
+    Input(GENERAL_TABLE_ID, "data"),
+)
+def sync_general_selected_manufacturer(
+    active_cell: Optional[Dict[str, Any]], rows: Optional[List[Dict[str, Any]]]
+):
+    if not ctx.triggered:
+        return None
+
+    triggered_prop = ctx.triggered[0]["prop_id"]
+
+    if triggered_prop.endswith(".data"):
+        return None
+
+    if not active_cell or rows is None:
+        return None
+
+    row_index = active_cell.get("row")
+    if row_index is None:
+        return None
+
+    try:
+        record = rows[row_index]
+    except (IndexError, TypeError):
+        return None
+
+    manufacturer = record.get("Manufacturer")
+    if not manufacturer:
+        return None
+
+    return manufacturer
 
 
 @callback(
@@ -953,116 +1002,98 @@ def sync_client_selected_manufacturer(
     return manufacturer
 
 
+def _empty_month_frame() -> pd.DataFrame:
+    months = list(range(1, 13))
+    frame = pd.DataFrame({"Month": months})
+    for column in ["Apyvarta", "Pajamos", "Kiekis", "Marža %"]:
+        frame[column] = np.nan
+    return frame
+
+
 @callback(
+    Output(GENERAL_CHART_ID, "figure"),
     Output(CLIENT_CHART_ID, "figure"),
     Output(CLIENT_NO_DATA_ID, "hidden"),
     Output(CLIENT_TABLE_WRAPPER_ID, "hidden"),
     Output(CLIENT_CHART_WRAPPER_ID, "hidden"),
-    Input(f"{PAGE_ID_PREFIX}_year", "value"),
-    Input(f"{PAGE_ID_PREFIX}_branch", "value"),
+    Input(FILTER_YEAR_ID, "value"),
+    Input(FILTER_BRANCH_ID, "value"),
+    Input(FILTER_MANUFACTURER_ID, "value"),
     Input(FILTER_CLIENT_ID, "value"),
     Input(FILTER_CLIENT_CODE_ID, "value"),
+    Input(GENERAL_SELECTED_MANUFACTURER_STORE_ID, "data"),
     Input(CLIENT_SELECTED_MANUFACTURER_STORE_ID, "data"),
 )
-def update_client_chart(
-    year: Optional[int],
-    branches: Optional[Sequence[str]],
-    client: Optional[str],
-    client_codes: Optional[Sequence[str]],
-    selected_manufacturer: Optional[str],
-):
-    normalized_branches = _normalized_branches(branches)
-
-    empty_chart_df = pd.DataFrame(
-        {
-            "Month": pd.Series(dtype="int64"),
-            "Apyvarta": pd.Series(dtype="float64"),
-            "Pajamos": pd.Series(dtype="float64"),
-            "Kiekis": pd.Series(dtype="float64"),
-            "Marža %": pd.Series(dtype="float64"),
-        }
-    )
-
-    if not client:
-        figure = _build_chart(empty_chart_df, None, year)
-        return figure, True, True, True
-
-    table_df = _fetch_table_data(year, normalized_branches, client, client_codes)
-
-    if table_df.empty:
-        figure = _build_chart(empty_chart_df, None, year)
-        return figure, False, True, True
-
-    available_manufacturers = set(table_df["Manufacturer"].astype(str))
-    normalized_selected = (
-        str(selected_manufacturer) if selected_manufacturer in available_manufacturers else None
-    )
-
-    chart_df = _fetch_monthly_data(
-        year,
-        normalized_branches,
-        normalized_selected,
-        client,
-        client_codes,
-    )
-    figure = _build_chart(chart_df, normalized_selected, year)
-
-    return figure, True, False, False
-
-
-@callback(
-    Output(GENERAL_TABLE_ID, "data"),
-    Output(GENERAL_CHART_ID, "figure"),
-    Input(f"{PAGE_ID_PREFIX}_year", "value"),
-    Input(f"{PAGE_ID_PREFIX}_branch", "value"),
-    Input(f"{PAGE_ID_PREFIX}_manufacturer", "value"),
-)
-def update_product_view(
+def update_charts(
     year: Optional[int],
     branches: Optional[Sequence[str]],
     manufacturer: Optional[str],
+    client: Optional[str],
+    client_codes: Optional[Sequence[str]],
+    general_selected: Optional[str],
+    client_selected: Optional[str],
 ):
     normalized_branches = _normalized_branches(branches)
+    normalized_manufacturer = str(manufacturer) if manufacturer else None
 
-    table_df = _fetch_table_data(year, normalized_branches)
-    table_records = [
-        {
-            "Manufacturer": row["Manufacturer"],
-            "Apyvarta": _format_currency(row["Apyvarta"]),
-            "Pajamos": _format_currency(row["Pajamos"]),
-            "Kiekis": _format_quantity(row["Kiekis"]),
-            "Marža %": _format_margin(row["Marža %"]),
-        }
-        for _, row in table_df.iterrows()
-    ]
+    general_manufacturer = (
+        normalized_manufacturer
+        if normalized_manufacturer
+        else (str(general_selected) if general_selected else None)
+    )
+    general_chart_df = _fetch_monthly_data(
+        year,
+        normalized_branches,
+        general_manufacturer,
+    )
+    general_figure = _build_chart(general_chart_df, general_manufacturer, year)
 
-    chart_df = _fetch_monthly_data(year, normalized_branches, manufacturer)
-    figure = _build_chart(chart_df, manufacturer, year)
+    empty_chart_df = _empty_month_frame()
 
-    return table_records, figure
+    if not client:
+        empty_client_figure = _build_chart(empty_chart_df, normalized_manufacturer, year)
+        return (
+            general_figure,
+            empty_client_figure,
+            True,
+            True,
+            True,
+        )
 
+    client_table_df = _fetch_table_data(year, normalized_branches, client, client_codes)
 
-@callback(
-    Output(f"{PAGE_ID_PREFIX}_manufacturer", "value"),
-    Input(GENERAL_TABLE_ID, "active_cell"),
-    State(GENERAL_TABLE_ID, "data"),
-    prevent_initial_call=True,
-)
-def sync_manufacturer_from_table(active_cell: Optional[Dict[str, Any]], rows: Optional[List[Dict[str, Any]]]):
-    if not active_cell or rows is None:
-        return no_update
+    if client_table_df.empty:
+        empty_client_figure = _build_chart(empty_chart_df, normalized_manufacturer, year)
+        return (
+            general_figure,
+            empty_client_figure,
+            False,
+            True,
+            True,
+        )
 
-    row_index = active_cell.get("row")
-    if row_index is None:
-        return no_update
+    available_manufacturers = set(client_table_df["Manufacturer"].astype(str))
+    normalized_client_selected = (
+        str(client_selected) if client_selected in available_manufacturers else None
+    )
 
-    try:
-        record = rows[row_index]
-    except (IndexError, TypeError):
-        return no_update
+    client_chart_manufacturer = (
+        normalized_manufacturer if normalized_manufacturer else normalized_client_selected
+    )
 
-    manufacturer = record.get("Manufacturer")
-    if not manufacturer:
-        return no_update
+    client_chart_df = _fetch_monthly_data(
+        year,
+        normalized_branches,
+        client_chart_manufacturer,
+        client,
+        client_codes,
+    )
+    client_figure = _build_chart(client_chart_df, client_chart_manufacturer, year)
 
-    return manufacturer
+    return (
+        general_figure,
+        client_figure,
+        True,
+        False,
+        False,
+    )

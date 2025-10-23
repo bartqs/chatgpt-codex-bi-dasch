@@ -15,37 +15,46 @@ from data.app_data import (
 )
 
 
-PAGE_ID_PREFIX = "product_analysis"
+FILTER_YEAR_ID = "pa-filter-year"
+FILTER_BRANCH_ID = "pa-filter-branch"
+FILTER_MANUFACTURER_ID = "pa-filter-manufacturer"
+FILTER_CLIENT_ID = "pa-filter-client"
+FILTER_CLIENT_CODE_ID = "pa-filter-client-code"
 
-GENERAL_TABLE_ID = "product-table"
-GENERAL_CHART_ID = "product-combo-chart"
-CLIENT_TABLE_ID = "client-product-table"
-CLIENT_CHART_ID = "client-product-combo-chart"
-FILTER_CLIENT_ID = "filter-client"
-FILTER_CLIENT_CODE_ID = "filter-client-code"
+GENERAL_TABLE_ID = "pa-table-global"
+GENERAL_CHART_ID = "pa-chart-global"
+CLIENT_TABLE_ID = "pa-table-client"
+CLIENT_CHART_ID = "pa-chart-client"
 CLIENT_VIEW_TOGGLE_ID = "client-view-toggle"
 CLIENT_VIEW_COLUMN_ID = "client-view-column"
 CLIENT_TABLE_WRAPPER_ID = "client-table-wrapper"
 CLIENT_CHART_WRAPPER_ID = "client-chart-wrapper"
 CLIENT_NO_DATA_ID = "client-no-data-card"
 CLIENT_SELECTED_MANUFACTURER_STORE_ID = "client-selected-manufacturer"
+GENERAL_SELECTED_MANUFACTURER_STORE_ID = "global-selected-manufacturer"
+CONTENT_GRID_ID = "pa-content-grid"
 
 GENERAL_COLUMN_STYLE = {
-    "flex": "1 1 0",
-    "minWidth": "360px",
     "display": "flex",
     "flexDirection": "column",
-    "gap": "16px",
+    "gap": "12px",
 }
 
 _CLIENT_COLUMN_BASE_STYLE = {
-    "flex": "1 1 0",
-    "minWidth": "360px",
+    "display": "flex",
     "flexDirection": "column",
-    "gap": "16px",
+    "gap": "12px",
 }
 CLIENT_VIEW_COLUMN_VISIBLE_STYLE = {**_CLIENT_COLUMN_BASE_STYLE, "display": "flex"}
 CLIENT_VIEW_COLUMN_HIDDEN_STYLE = {**_CLIENT_COLUMN_BASE_STYLE, "display": "none"}
+
+GRID_BASE_STYLE = {
+    "display": "grid",
+    "gridTemplateColumns": "repeat(2, minmax(0, 1fr))",
+    "gap": "16px",
+    "alignItems": "start",
+}
+GRID_SINGLE_COLUMN_STYLE = dict(GRID_BASE_STYLE, gridTemplateColumns="minmax(0, 1fr)")
 
 
 dash.register_page(
@@ -97,7 +106,7 @@ def layout():
                         [
                             html.Label("Year"),
                             dcc.Dropdown(
-                                id=f"{PAGE_ID_PREFIX}_year",
+                                id=FILTER_YEAR_ID,
                                 options=year_options,
                                 value=_default_year(),
                                 clearable=False,
@@ -109,7 +118,7 @@ def layout():
                         [
                             html.Label("Branch"),
                             dcc.Dropdown(
-                                id=f"{PAGE_ID_PREFIX}_branch",
+                                id=FILTER_BRANCH_ID,
                                 options=branch_options,
                                 value=[b for b in DEFAULT_BRANCHES if b in FILIALAS_OPTIONS]
                                 or FILIALAS_OPTIONS[:2],
@@ -119,6 +128,21 @@ def layout():
                             ),
                         ],
                         style={"flex": "1 1 220px", "minWidth": "200px"},
+                    ),
+                    html.Div(
+                        [
+                            html.Label("Manufacturer"),
+                            dcc.Dropdown(
+                                id=FILTER_MANUFACTURER_ID,
+                                options=[],
+                                value=None,
+                                multi=False,
+                                placeholder="All manufacturers",
+                                clearable=True,
+                                searchable=True,
+                            ),
+                        ],
+                        style={"flex": "2 1 300px", "minWidth": "260px"},
                     ),
                     html.Div(
                         [
@@ -149,21 +173,6 @@ def layout():
                         ],
                         style={"flex": "1 1 260px", "minWidth": "220px"},
                     ),
-                    html.Div(
-                        [
-                            html.Label("Manufacturer"),
-                            dcc.Dropdown(
-                                id=f"{PAGE_ID_PREFIX}_manufacturer",
-                                options=[],
-                                value=None,
-                                multi=False,
-                                placeholder="All manufacturers",
-                                clearable=True,
-                                searchable=True,
-                            ),
-                        ],
-                        style={"flex": "2 1 300px", "minWidth": "260px"},
-                    ),
                 ],
                 style={
                     "display": "flex",
@@ -187,22 +196,30 @@ def layout():
                                     {"name": "Marža % (Margin %)", "id": "Marža %"},
                                 ],
                                 data=[],
+                                fixed_rows={"headers": True},
                                 style_table={
-                                    "overflowX": "auto",
+                                    "height": "520px",
+                                    "overflowY": "auto",
+                                    "overflowX": "hidden",
                                     "border": f"1px solid {IC_GRAY}",
                                     "borderRadius": "10px",
-                                    "maxHeight": "60vh",
                                 },
                                 style_header={
                                     "backgroundColor": IC_NAVY,
                                     "color": IC_WHITE,
                                     "fontWeight": "700",
+                                    "position": "sticky",
+                                    "top": 0,
+                                    "zIndex": 2,
                                 },
                                 style_cell={
                                     "padding": "6px 8px",
                                     "fontFamily": "Arial",
                                     "fontSize": "13px",
                                     "whiteSpace": "nowrap",
+                                    "overflow": "hidden",
+                                    "textOverflow": "ellipsis",
+                                    "minWidth": "120px",
                                 },
                                 style_data_conditional=[
                                     {"if": {"row_index": "odd"}, "backgroundColor": "#FAFBFC"},
@@ -230,7 +247,6 @@ def layout():
                                     style={"height": "540px", "width": "100%"},
                                 ),
                                 style={
-                                    "marginTop": "18px",
                                     "background": IC_WHITE,
                                     "border": f"1px solid {IC_GRAY}",
                                     "borderRadius": "10px",
@@ -287,22 +303,30 @@ def layout():
                                         {"name": "Marža % (Margin %)", "id": "Marža %"},
                                     ],
                                     data=[],
+                                    fixed_rows={"headers": True},
                                     style_table={
-                                        "overflowX": "auto",
+                                        "height": "520px",
+                                        "overflowY": "auto",
+                                        "overflowX": "hidden",
                                         "border": f"1px solid {IC_GRAY}",
                                         "borderRadius": "10px",
-                                        "maxHeight": "60vh",
                                     },
                                     style_header={
                                         "backgroundColor": IC_NAVY,
                                         "color": IC_WHITE,
                                         "fontWeight": "700",
+                                        "position": "sticky",
+                                        "top": 0,
+                                        "zIndex": 2,
                                     },
                                     style_cell={
                                         "padding": "6px 8px",
                                         "fontFamily": "Arial",
                                         "fontSize": "13px",
                                         "whiteSpace": "nowrap",
+                                        "overflow": "hidden",
+                                        "textOverflow": "ellipsis",
+                                        "minWidth": "120px",
                                     },
                                     style_data_conditional=[
                                         {"if": {"row_index": "odd"}, "backgroundColor": "#FAFBFC"},
@@ -333,7 +357,6 @@ def layout():
                                     style={"height": "540px", "width": "100%"},
                                 ),
                                 style={
-                                    "marginTop": "18px",
                                     "background": IC_WHITE,
                                     "border": f"1px solid {IC_GRAY}",
                                     "borderRadius": "10px",
@@ -346,15 +369,12 @@ def layout():
                         id=CLIENT_VIEW_COLUMN_ID,
                         style=CLIENT_VIEW_COLUMN_HIDDEN_STYLE,
                     ),
-                        ],
-                        style={
-                            "display": "flex",
-                            "flexWrap": "nowrap",
-                            "gap": "16px",
-                            "alignItems": "stretch",
-                        },
+                ],
+                id=CONTENT_GRID_ID,
+                style=GRID_BASE_STYLE,
             ),
             dcc.Store(id=CLIENT_SELECTED_MANUFACTURER_STORE_ID),
+            dcc.Store(id=GENERAL_SELECTED_MANUFACTURER_STORE_ID),
         ],
         style={
             "padding": "16px",

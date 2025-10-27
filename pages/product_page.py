@@ -1,4 +1,11 @@
-"""Product Analysis page layout and registration."""
+"""Product Analysis page layout and registration.
+
+This module only defines the static layout for the page. The Dash callbacks
+that provide interactivity live in :mod:`pages.product_callbacks` so they can
+focus solely on data access and plotting logic. Keeping the definitions split
+between the layout and the callback logic prevents accidental circular imports
+and makes it clearer where to look when adjusting the UI versus the data flow.
+"""
 
 from __future__ import annotations
 
@@ -16,6 +23,30 @@ from data.app_data import (
 
 
 PAGE_ID_PREFIX = "product_analysis"
+
+# Reusable layout fragments -------------------------------------------------
+
+TABLE_COLUMNS = [
+    {"name": "Manufacturer", "id": "Manufacturer"},
+    {"name": "Apyvarta (Turnover €)", "id": "Apyvarta"},
+    {"name": "Pajamos (Revenue €)", "id": "Pajamos"},
+    {"name": "Kiekis (Quantity)", "id": "Kiekis"},
+    {"name": "Marža % (Margin %)", "id": "Marža %"},
+]
+
+FILTER_CONTAINER_STYLE = {
+    "display": "flex",
+    "flexWrap": "wrap",
+    "gap": "10px",
+    "alignItems": "flex-end",
+    "margin": "6px 0 14px 0",
+}
+
+PAGE_STYLE = {
+    "padding": "16px",
+    "background": IC_BG,
+    "minHeight": "100vh",
+}
 
 
 dash.register_page(
@@ -106,23 +137,11 @@ def layout():
                         style={"flex": "2 1 300px", "minWidth": "260px"},
                     ),
                 ],
-                style={
-                    "display": "flex",
-                    "flexWrap": "wrap",
-                    "gap": "10px",
-                    "alignItems": "flex-end",
-                    "margin": "6px 0 14px 0",
-                },
+                style=FILTER_CONTAINER_STYLE,
             ),
             dash_table.DataTable(
                 id=f"{PAGE_ID_PREFIX}_table",
-                columns=[
-                    {"name": "Manufacturer", "id": "Manufacturer"},
-                    {"name": "Apyvarta (Turnover €)", "id": "Apyvarta"},
-                    {"name": "Pajamos (Revenue €)", "id": "Pajamos"},
-                    {"name": "Kiekis (Quantity)", "id": "Kiekis"},
-                    {"name": "Marža % (Margin %)", "id": "Marža %"},
-                ],
+                columns=TABLE_COLUMNS,
                 data=[],
                 style_table={
                     "overflowX": "auto",
@@ -168,11 +187,7 @@ def layout():
                 },
             ),
         ],
-        style={
-            "padding": "16px",
-            "background": IC_BG,
-            "minHeight": "100vh",
-        },
+        style=PAGE_STYLE,
     )
 
 

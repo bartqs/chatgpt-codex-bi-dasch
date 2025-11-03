@@ -1,24 +1,27 @@
 import dash
 import numpy as np
 import pandas as pd
-from dash import Input, Output, callback, dash_table, dcc, html
+from dash import Input, Output, State, callback, dash_table, dcc, html, ctx
 from plotly import graph_objects as go
 
 from data.app_data import (
     COLORWAY_YEARS,
     IC_BLACK,
-    FILIALAI_ADV,
     IC_GRAY,
     IC_NAVY,
     IC_WHITE,
-    KATEGORIJOS,
     MENUO_LABELS_LT,
     MENUO_TVARKA,
-    SEGMENTAI_ADV,
     aggregate_by_vendor,
-    df_adv,
     filter_dataframe,
-    YEARS_ADV,
+    get_advisor_categories,
+    get_advisor_context,
+    get_advisor_data,
+    get_advisor_filialai,
+    get_advisor_segments,
+    get_advisor_sellers,
+    get_advisor_years,
+    reset_data_caches,
 )
 
 dash.register_page(
@@ -27,6 +30,14 @@ dash.register_page(
     name="Pardavėjų patarėjas",
     title="Pardavėjų patarėjas",
 )
+
+
+REFRESH_BUTTON_ID = "adv-refresh-button"
+
+
+def _maybe_reset_advisor_caches() -> None:
+    if ctx.triggered_id == REFRESH_BUTTON_ID:
+        reset_data_caches()
 
 
 def layout():
@@ -53,14 +64,21 @@ def layout():
         sort_action="none",
     )
 
-    default_year = 2025 if 2025 in YEARS_ADV else (YEARS_ADV[-1] if YEARS_ADV else None)
+    advisor_df, meta = get_advisor_context()
+    filialas_options = meta["filialai"]
+    year_options = meta["years"]
+    segment_options = ["Visi"] + meta["segments"]
+    category_options = ["Visos"] + meta["categories"]
+    seller_options = meta["sellers"]
+
+    default_year = year_options[-1] if year_options else None
 
     if default_year is not None:
-        start_left_df = df_adv[df_adv["Metai"] == default_year]
-        if start_left_df.empty:
-            start_left_df = df_adv[df_adv["Metai"] == (YEARS_ADV[-1] if YEARS_ADV else default_year)]
+        start_left_df = advisor_df[advisor_df["Metai"] == default_year]
+        if start_left_df.empty and year_options:
+            start_left_df = advisor_df[advisor_df["Metai"] == year_options[-1]]
     else:
-        start_left_df = df_adv.copy()
+        start_left_df = advisor_df.copy()
 
     start_left = aggregate_by_vendor(start_left_df)
 
@@ -77,8 +95,8 @@ def layout():
                             html.Label("Filialas"),
                             dcc.Dropdown(
                                 id="adv_f_filialas",
-                                options=[{"label": f, "value": f} for f in FILIALAI_ADV],
-                                value=FILIALAI_ADV,
+                                options=[{"label": f, "value": f} for f in filialas_options],
+                                value=filialas_options,
                                 multi=True,
                                 clearable=False,
                             ),
@@ -90,8 +108,8 @@ def layout():
                             html.Label("Metai"),
                             dcc.Dropdown(
                                 id="adv_f_metai",
-                                options=[{"label": int(y), "value": int(y)} for y in YEARS_ADV],
-                                value=[default_year] if default_year else YEARS_ADV[-1:],
+                                options=[{"label": int(y), "value": int(y)} for y in year_options],
+                                value=[default_year] if default_year else year_options[-1:],
                                 multi=True,
                                 clearable=False,
                             ),
@@ -116,7 +134,7 @@ def layout():
                             html.Label("Segmentas"),
                             dcc.Dropdown(
                                 id="adv_f_segmentas",
-                                options=[{"label": s, "value": s} for s in ["Visi"] + SEGMENTAI_ADV],
+                                options=[{"label": s, "value": s} for s in segment_options],
                                 value="Visi",
                                 clearable=False,
                             ),
@@ -128,7 +146,7 @@ def layout():
                             html.Label("Kategorija"),
                             dcc.Dropdown(
                                 id="adv_f_kategorija",
-                                options=[{"label": k, "value": k} for k in ["Visos"] + KATEGORIJOS],
+                                options=[{"label": k, "value": k} for k in category_options],
                                 value="Visos",
                                 clearable=False,
                             ),
@@ -140,7 +158,7 @@ def layout():
                             html.Label("Pardavėjas"),
                             dcc.Dropdown(
                                 id="adv_f_pardavejas",
-                                options=[{"label": s, "value": s} for s in sorted(df_adv["Pardavejas_display"].unique())],
+                                options=[{"label": s, "value": s} for s in seller_options],
                                 value=None,
                                 multi=False,
                                 placeholder="(nepasirinkus – rodoma tik kairė lentelė)",
@@ -148,6 +166,29 @@ def layout():
                             ),
                         ],
                         style=FILTER_ITEM,
+                    ),
+                    html.Div(
+                        [
+                            html.Button(
+                                "Atnaujinti duomenis",
+                                id=REFRESH_BUTTON_ID,
+                                n_clicks=0,
+                                style={
+                                    "padding": "8px 16px",
+                                    "border": f"1px solid {IC_NAVY}",
+                                    "background": IC_WHITE,
+                                    "color": IC_NAVY,
+                                    "borderRadius": "8px",
+                                    "fontWeight": 600,
+                                },
+                            )
+                        ],
+                        style={
+                            "flex": "0 0 auto",
+                            "display": "flex",
+                            "flexDirection": "column",
+                            "justifyContent": "flex-end",
+                        },
                     ),
                 ],
                 style=FILTER_ROW,
@@ -227,22 +268,107 @@ def layout():
 
 
 @callback(
+    Output("adv_f_filialas", "options"),
+    Output("adv_f_filialas", "value"),
+    Output("adv_f_metai", "options"),
+    Output("adv_f_metai", "value"),
+    Output("adv_f_segmentas", "options"),
+    Output("adv_f_kategorija", "options"),
+    Output("adv_f_pardavejas", "options"),
+    Input(REFRESH_BUTTON_ID, "n_clicks"),
+    State("adv_f_filialas", "value"),
+    State("adv_f_metai", "value"),
+    State("adv_f_segmentas", "value"),
+    State("adv_f_kategorija", "value"),
+    State("adv_f_pardavejas", "value"),
+    prevent_initial_call=False,
+)
+def refresh_advisor_filters(
+    _refresh_clicks,
+    current_filialai,
+    current_years,
+    current_segment,
+    current_category,
+    current_seller,
+):
+    _maybe_reset_advisor_caches()
+
+    _, meta = get_advisor_context()
+
+    filialas_opts = meta["filialai"]
+    year_opts = meta["years"]
+    segment_opts = ["Visi"] + meta["segments"]
+    category_opts = ["Visos"] + meta["categories"]
+    seller_opts = meta["sellers"]
+
+    filialas_option_dicts = [{"label": f, "value": f} for f in filialas_opts]
+    year_option_dicts = [{"label": int(y), "value": int(y)} for y in year_opts]
+    segment_option_dicts = [{"label": s, "value": s} for s in segment_opts]
+    category_option_dicts = [{"label": k, "value": k} for k in category_opts]
+    seller_option_dicts = [{"label": s, "value": s} for s in seller_opts]
+
+    valid_filialas = {opt["value"] for opt in filialas_option_dicts}
+    valid_years = {opt["value"] for opt in year_option_dicts}
+    valid_segments = {opt["value"] for opt in segment_option_dicts}
+    valid_categories = {opt["value"] for opt in category_option_dicts}
+    valid_sellers = {opt["value"] for opt in seller_option_dicts}
+
+    default_year = year_opts[-1] if year_opts else None
+
+    if ctx.triggered_id is None:
+        filialas_value = filialas_opts
+        metai_value = [default_year] if default_year is not None else []
+        segment_value = "Visi"
+        category_value = "Visos"
+        seller_value = None
+    else:
+        filialas_value = [f for f in (current_filialai or []) if f in valid_filialas] or filialas_opts
+        metai_candidates = [int(y) for y in (current_years or []) if int(y) in valid_years]
+        metai_value = metai_candidates or ([default_year] if default_year is not None else [])
+        segment_value = current_segment if current_segment in valid_segments else "Visi"
+        category_value = current_category if current_category in valid_categories else "Visos"
+        seller_value = current_seller if current_seller in valid_sellers else None
+
+    return (
+        filialas_option_dicts,
+        filialas_value,
+        year_option_dicts,
+        metai_value,
+        segment_option_dicts,
+        category_option_dicts,
+        seller_option_dicts,
+    )
+
+
+@callback(
     Output("adv_f_pardavejas", "options"),
     Input("adv_f_filialas", "value"),
     Input("adv_f_metai", "value"),
     Input("adv_f_menesiai", "value"),
     Input("adv_f_segmentas", "value"),
     Input("adv_f_kategorija", "value"),
+    Input(REFRESH_BUTTON_ID, "n_clicks"),
 )
-def adv_update_seller_options(filialai, metai, menesiai, segmentas, kategorija):
+def adv_update_seller_options(
+    filialai,
+    metai,
+    menesiai,
+    segmentas,
+    kategorija,
+    _refresh_clicks,
+):
     """Update seller dropdown options based on filters."""
+    _maybe_reset_advisor_caches()
+
+    df = get_advisor_data()
+
     filialai = filialai or []
     metai = [int(y) for y in (metai or [])]
     menesiai = menesiai or []
     segmentas = segmentas or "Visi"
     kategorija = kategorija or "Visos"
 
-    d = filter_dataframe(df_adv, filialai=filialai, years=metai, months=menesiai)
+    d = filter_dataframe(df, filialai=filialai, years=metai, months=menesiai)
 
     if segmentas != "Visi":
         d = d[d["Segmentas"] == segmentas]
@@ -266,16 +392,29 @@ def adv_update_seller_options(filialai, metai, menesiai, segmentas, kategorija):
     Input("adv_f_segmentas", "value"),
     Input("adv_f_kategorija", "value"),
     Input("adv_f_pardavejas", "value"),
+    Input(REFRESH_BUTTON_ID, "n_clicks"),
 )
-def adv_update_tables(filialai, metai, menesiai, segmentas, kategorija, pardavejas_display):
+def adv_update_tables(
+    filialai,
+    metai,
+    menesiai,
+    segmentas,
+    kategorija,
+    pardavejas_display,
+    _refresh_clicks,
+):
     """Update advisor tables based on filters."""
+    _maybe_reset_advisor_caches()
+
+    df = get_advisor_data()
+
     filialai = filialai or []
     metai = [int(y) for y in (metai or [])]
     menesiai = menesiai or []
     segmentas = segmentas or "Visi"
     kategorija = kategorija or "Visos"
 
-    d = filter_dataframe(df_adv, filialai=filialai, years=metai, months=menesiai)
+    d = filter_dataframe(df, filialai=filialai, years=metai, months=menesiai)
 
     if segmentas != "Visi":
         d = d[d["Segmentas"] == segmentas]
@@ -312,8 +451,18 @@ def adv_update_tables(filialai, metai, menesiai, segmentas, kategorija, pardavej
     Input("adv_f_kategorija", "value"),
     Input("adv_f_pardavejas", "value"),
     Input("metric_switch_vendor", "value"),
+    Input(REFRESH_BUTTON_ID, "n_clicks"),
 )
-def update_vendor_timeseries(filialai, metai, menesiai, segmentas, kategorija, pardavejas_display, metric):
+def update_vendor_timeseries(
+    filialai,
+    metai,
+    menesiai,
+    segmentas,
+    kategorija,
+    pardavejas_display,
+    metric,
+    _refresh_clicks,
+):
     """Create vendor time-series chart showing monthly trends across selected years."""
     try:
         hidden_style = {"display": "none", "marginTop": "20px"}
@@ -323,13 +472,17 @@ def update_vendor_timeseries(filialai, metai, menesiai, segmentas, kategorija, p
             empty_fig = go.Figure()
             return empty_fig, hidden_style
 
+        _maybe_reset_advisor_caches()
+
+        df = get_advisor_data()
+
         filialai = filialai or []
         metai = [int(y) for y in (metai or [])]
         menesiai = menesiai or []
         segmentas = segmentas or "Visi"
         kategorija = kategorija or "Visos"
 
-        d = filter_dataframe(df_adv, filialai=filialai, years=metai, months=menesiai)
+        d = filter_dataframe(df, filialai=filialai, years=metai, months=menesiai)
 
         if segmentas != "Visi":
             d = d[d["Segmentas"] == segmentas]

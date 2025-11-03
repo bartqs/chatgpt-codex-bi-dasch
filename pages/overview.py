@@ -1,8 +1,7 @@
 import dash
-from dash import Input, Output, callback, dash_table, dcc, html
+from dash import Input, Output, State, callback, dash_table, dcc, html, ctx
 
 from data.app_data import (
-    FILIALAS_OPTIONS,
     IC_BG,
     IC_GRAY,
     IC_NAVY,
@@ -10,11 +9,14 @@ from data.app_data import (
     MENUO_LABELS_LT,
     MENUO_TVARKA,
     METRICS,
-    SEGMENT_OPTIONS,
     SummaryCalculator,
-    YEAR_OPTIONS,
-    df_sums,
     filter_dataframe,
+    get_summary_context,
+    get_summary_data,
+    get_summary_filialai,
+    get_summary_segments,
+    get_summary_years,
+    reset_data_caches,
 )
 
 dash.register_page(
@@ -76,7 +78,7 @@ def layout():
                         [
                             html.Label("Segmentas"),
                             dcc.Dropdown(
-                                [{"label": s, "value": s} for s in SEGMENT_OPTIONS],
+                                [{"label": s, "value": s} for s in get_summary_segments()],
                                 [],
                                 id="segment",
                                 multi=True,
@@ -90,8 +92,8 @@ def layout():
                         [
                             html.Label("Filialas"),
                             dcc.Dropdown(
-                                [{"label": f, "value": f} for f in FILIALAS_OPTIONS],
-                                FILIALAS_OPTIONS,
+                                [{"label": f, "value": f} for f in get_summary_filialai()],
+                                get_summary_filialai(),
                                 id="filialas",
                                 multi=True,
                                 style={"minWidth": "180px"},
@@ -103,8 +105,11 @@ def layout():
                         [
                             html.Label("Metai"),
                             dcc.Dropdown(
-                                [{"label": int(y), "value": int(y)} for y in YEAR_OPTIONS],
-                                [int(y) for y in YEAR_OPTIONS],
+                                [
+                                    {"label": int(y), "value": int(y)}
+                                    for y in get_summary_years()
+                                ],
+                                get_summary_years(),
                                 id="years",
                                 multi=True,
                                 style={"minWidth": "180px"},
@@ -125,6 +130,29 @@ def layout():
                             ),
                         ],
                         style={"marginLeft": "12px"},
+                    ),
+                    html.Div(
+                        [
+                            html.Button(
+                                "Atnaujinti duomenis",
+                                id="overview-refresh",
+                                n_clicks=0,
+                                style={
+                                    "padding": "8px 16px",
+                                    "border": f"1px solid {IC_NAVY}",
+                                    "background": IC_WHITE,
+                                    "color": IC_NAVY,
+                                    "borderRadius": "8px",
+                                    "fontWeight": 600,
+                                },
+                            )
+                        ],
+                        style={
+                            "marginLeft": "auto",
+                            "display": "flex",
+                            "flexDirection": "column",
+                            "justifyContent": "flex-end",
+                        },
                     ),
                 ],
                 style={
@@ -184,6 +212,45 @@ def layout():
 
 
 @callback(
+    Output("segment", "options"),
+    Output("filialas", "options"),
+    Output("years", "options"),
+    Output("filialas", "value"),
+    Output("years", "value"),
+    Input("overview-refresh", "n_clicks"),
+    State("filialas", "value"),
+    State("years", "value"),
+    prevent_initial_call=False,
+)
+def refresh_overview_filters(refresh_clicks, current_filialai, current_years):
+    """Ensure summary filter dropdowns always reflect the latest data from MySQL."""
+
+    if ctx.triggered_id == "overview-refresh":
+        reset_data_caches()
+
+    df, meta = get_summary_context()
+
+    segment_options = [{"label": s, "value": s} for s in meta["segments"]]
+    filialas_options = [{"label": f, "value": f} for f in meta["filialai"]]
+    year_options = [{"label": int(y), "value": int(y)} for y in meta["years"]]
+
+    valid_filialas = {opt["value"] for opt in filialas_options}
+    valid_years = {opt["value"] for opt in year_options}
+
+    if ctx.triggered_id is None:
+        filialas_value = meta["filialai"]
+        years_value = meta["years"]
+    else:
+        preserved_filialas = [f for f in (current_filialai or []) if f in valid_filialas]
+        preserved_years = [int(y) for y in (current_years or []) if int(y) in valid_years]
+
+        filialas_value = preserved_filialas or meta["filialai"]
+        years_value = preserved_years or meta["years"]
+
+    return segment_options, filialas_options, year_options, filialas_value, years_value
+
+
+@callback(
     Output("graph_l51", "figure"),
     Output("graph_l52", "figure"),
     Output("tbl_months", "columns"),
@@ -195,12 +262,19 @@ def layout():
     Input("filialas", "value"),
     Input("years", "value"),
     Input("months", "value"),
+    Input("overview-refresh", "n_clicks"),
 )
-def update_summary(metric, chart_type, segments, filialai, years_sel, months_sel):
+def update_summary(metric, chart_type, segments, filialai, years_sel, months_sel, refresh_clicks):
     """Replicate the original summary tab callback behavior."""
-    years_sel = sorted(set(map(int, years_sel or YEAR_OPTIONS)))
+    if ctx.triggered_id == "overview-refresh":
+        reset_data_caches()
 
-    d = filter_dataframe(df_sums, segments=segments, filialai=filialai, years=years_sel)
+    df = get_summary_data()
+
+    years_available = get_summary_years()
+    years_sel = sorted(set(map(int, years_sel or years_available)))
+
+    d = filter_dataframe(df, segments=segments, filialai=filialai, years=years_sel)
 
     calc = SummaryCalculator(d)
 
@@ -210,7 +284,7 @@ def update_summary(metric, chart_type, segments, filialai, years_sel, months_sel
     columns, data = calc.build_monthly_table(years_sel, months_sel, metric)
 
     this_year = int(sorted(years_sel)[-1])
-    prev_candidates = [y for y in sorted(set(df_sums["Metai"])) if y < this_year]
+    prev_candidates = [int(y) for y in sorted(set(df["Metai"])) if int(y) < this_year]
     prev_year = prev_candidates[-1] if prev_candidates else None
 
     kpi_row = calc.calculate_kpis(this_year, prev_year, metric, months_sel)

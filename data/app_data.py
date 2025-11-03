@@ -219,19 +219,127 @@ def load_advisor_data() -> pd.DataFrame:
     return df
 
 
-# Load data once at startup
-df_sums = load_summary_data()
-df_adv = load_advisor_data()
+# In-memory caches refreshed on demand by each page
+_summary_cache: Optional[pd.DataFrame] = None
+_summary_meta: Dict[str, Any] = {}
+_advisor_cache: Optional[pd.DataFrame] = None
+_advisor_meta: Dict[str, Any] = {}
 
-# Extract filter options
-SEGMENT_OPTIONS = sorted([s for s in df_sums["Segmentas"].cat.categories if s is not None])
-FILIALAS_OPTIONS = sorted([f for f in df_sums["Filialas"].cat.categories if f is not None])
-YEAR_OPTIONS = sorted(df_sums["Metai"].unique().tolist())
 
-YEARS_ADV = sorted(df_adv["Metai"].dropna().unique().tolist())
-FILIALAI_ADV = sorted(df_adv["Filialas"].dropna().unique().tolist())
-SEGMENTAI_ADV = sorted(df_adv["Segmentas"].dropna().unique().tolist())
-KATEGORIJOS = sorted(df_adv["Kategorija"].dropna().unique().tolist())
+def _build_summary_meta(df: pd.DataFrame) -> Dict[str, Any]:
+    segments = sorted(
+        [str(s) for s in df["Segmentas"].dropna().unique().tolist() if str(s).strip()]
+    )
+    filialai = sorted(
+        [str(f) for f in df["Filialas"].dropna().unique().tolist() if str(f).strip()]
+    )
+    years = sorted(int(y) for y in df["Metai"].dropna().unique().tolist())
+    return {
+        "segments": segments,
+        "filialai": filialai,
+        "years": years,
+    }
+
+
+def _build_advisor_meta(df: pd.DataFrame) -> Dict[str, Any]:
+    filialai = sorted(
+        [str(f) for f in df["Filialas"].dropna().unique().tolist() if str(f).strip()]
+    )
+    years = sorted(int(y) for y in df["Metai"].dropna().unique().tolist())
+    segments = sorted(
+        [str(s) for s in df["Segmentas"].dropna().unique().tolist() if str(s).strip()]
+    )
+    categories = sorted(
+        [str(c) for c in df["Kategorija"].dropna().unique().tolist() if str(c).strip()]
+    )
+    sellers = sorted(
+        [str(s) for s in df["Pardavejas_display"].dropna().unique().tolist() if str(s).strip()]
+    )
+    return {
+        "filialai": filialai,
+        "years": years,
+        "segments": segments,
+        "categories": categories,
+        "sellers": sellers,
+    }
+
+
+def get_summary_context(force_refresh: bool = False) -> Tuple[pd.DataFrame, Dict[str, Any]]:
+    """Return cached summary data and metadata, refreshing from MySQL when required."""
+
+    global _summary_cache, _summary_meta
+
+    if force_refresh or _summary_cache is None:
+        df = load_summary_data()
+        _summary_cache = df
+        _summary_meta = _build_summary_meta(df)
+
+    return _summary_cache.copy(deep=False), dict(_summary_meta)
+
+
+def get_summary_data(force_refresh: bool = False) -> pd.DataFrame:
+    """Convenience helper returning only the summary dataframe."""
+
+    df, _ = get_summary_context(force_refresh=force_refresh)
+    return df
+
+
+def get_summary_segments(force_refresh: bool = False) -> List[str]:
+    _, meta = get_summary_context(force_refresh=force_refresh)
+    return meta["segments"]
+
+
+def get_summary_filialai(force_refresh: bool = False) -> List[str]:
+    _, meta = get_summary_context(force_refresh=force_refresh)
+    return meta["filialai"]
+
+
+def get_summary_years(force_refresh: bool = False) -> List[int]:
+    _, meta = get_summary_context(force_refresh=force_refresh)
+    return meta["years"]
+
+
+def get_advisor_context(force_refresh: bool = False) -> Tuple[pd.DataFrame, Dict[str, Any]]:
+    """Return cached advisor data and metadata, refreshing when requested."""
+
+    global _advisor_cache, _advisor_meta
+
+    if force_refresh or _advisor_cache is None:
+        df = load_advisor_data()
+        _advisor_cache = df
+        _advisor_meta = _build_advisor_meta(df)
+
+    return _advisor_cache.copy(deep=False), dict(_advisor_meta)
+
+
+def get_advisor_data(force_refresh: bool = False) -> pd.DataFrame:
+    df, _ = get_advisor_context(force_refresh=force_refresh)
+    return df
+
+
+def get_advisor_filialai(force_refresh: bool = False) -> List[str]:
+    _, meta = get_advisor_context(force_refresh=force_refresh)
+    return meta["filialai"]
+
+
+def get_advisor_years(force_refresh: bool = False) -> List[int]:
+    _, meta = get_advisor_context(force_refresh=force_refresh)
+    return meta["years"]
+
+
+def get_advisor_segments(force_refresh: bool = False) -> List[str]:
+    _, meta = get_advisor_context(force_refresh=force_refresh)
+    return meta["segments"]
+
+
+def get_advisor_categories(force_refresh: bool = False) -> List[str]:
+    _, meta = get_advisor_context(force_refresh=force_refresh)
+    return meta["categories"]
+
+
+def get_advisor_sellers(force_refresh: bool = False) -> List[str]:
+    _, meta = get_advisor_context(force_refresh=force_refresh)
+    return meta["sellers"]
 
 
 # ==================== Customer Overview Configuration ====================
@@ -323,6 +431,28 @@ _customer_category_detail_cache: Dict[Tuple[Any, ...], Tuple[float, Any]] = {}
 _customer_category_vendor_cache: Dict[Tuple[Any, ...], Tuple[float, Any]] = {}
 
 
+def reset_data_caches() -> None:
+    """Clear in-memory dataframes and cached query results."""
+
+    global _summary_cache, _summary_meta, _advisor_cache, _advisor_meta
+
+    _summary_cache = None
+    _summary_meta = {}
+    _advisor_cache = None
+    _advisor_meta = {}
+
+    _get_columns_cached.cache_clear()
+    _load_category_mapping.cache_clear()
+    _get_customer_filter_frame_cached.cache_clear()
+    _get_customer_year_options_cached.cache_clear()
+
+    _customer_transactions_cache.clear()
+    _customer_metric_cache.clear()
+    _customer_category_cache.clear()
+    _customer_category_detail_cache.clear()
+    _customer_category_vendor_cache.clear()
+
+
 @lru_cache(maxsize=1)
 def _load_category_mapping() -> pd.DataFrame:
     """Fetch category → category group relationships."""
@@ -385,7 +515,7 @@ def _cache_set(cache: Dict[Tuple[Any, ...], Tuple[float, Any]], key: Tuple[Any, 
 
 
 @lru_cache(maxsize=1)
-def get_customer_filter_frame() -> pd.DataFrame:
+def _get_customer_filter_frame_cached() -> pd.DataFrame:
     """Return a frame with manager → client → code relationships."""
 
     year_col = CUSTOMER_COLUMNS["year"]
@@ -416,8 +546,18 @@ def get_customer_filter_frame() -> pd.DataFrame:
     return df
 
 
+def get_customer_filter_frame(force_refresh: bool = False) -> pd.DataFrame:
+    """Return cached manager → client relationships, reloading when requested."""
+
+    if force_refresh:
+        _get_customer_filter_frame_cached.cache_clear()
+
+    df = _get_customer_filter_frame_cached()
+    return df.copy(deep=False)
+
+
 @lru_cache(maxsize=1)
-def get_customer_year_options() -> List[int]:
+def _get_customer_year_options_cached() -> List[int]:
     """Return sorted list of available years."""
 
     year_col = CUSTOMER_COLUMNS["year"]
@@ -439,6 +579,15 @@ def get_customer_year_options() -> List[int]:
     df["Metai"] = pd.to_numeric(df["Metai"], errors="coerce")
     years = df.dropna()["Metai"].astype(int).tolist()
     return years
+
+
+def get_customer_year_options(force_refresh: bool = False) -> List[int]:
+    """Expose cached customer year options with optional refresh."""
+
+    if force_refresh:
+        _get_customer_year_options_cached.cache_clear()
+
+    return list(_get_customer_year_options_cached())
 
 
 def get_latest_customer_year() -> Optional[int]:
@@ -1516,16 +1665,23 @@ __all__ = [
     "MENUO_TVARKA",
     "MENUO_LABELS_LT",
     "METRICS",
-    "df_sums",
-    "df_adv",
-    "SEGMENT_OPTIONS",
-    "FILIALAS_OPTIONS",
-    "YEAR_OPTIONS",
-    "YEARS_ADV",
-    "FILIALAI_ADV",
-    "SEGMENTAI_ADV",
-    "KATEGORIJOS",
+    "get_summary_context",
+    "get_summary_data",
+    "get_summary_segments",
+    "get_summary_filialai",
+    "get_summary_years",
+    "get_advisor_context",
+    "get_advisor_data",
+    "get_advisor_filialai",
+    "get_advisor_years",
+    "get_advisor_segments",
+    "get_advisor_categories",
+    "get_advisor_sellers",
+    "get_customer_filter_frame",
+    "get_customer_year_options",
+    "get_latest_customer_year",
     "filter_dataframe",
     "aggregate_by_vendor",
     "SummaryCalculator",
+    "reset_data_caches",
 ]

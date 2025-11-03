@@ -6,12 +6,12 @@ import dash
 from dash import dcc, html, dash_table
 
 from data.app_data import (
-    FILIALAS_OPTIONS,
     IC_BG,
     IC_GRAY,
     IC_NAVY,
     IC_WHITE,
-    YEAR_OPTIONS,
+    get_summary_filialai,
+    get_summary_years,
 )
 
 
@@ -33,6 +33,7 @@ CLIENT_NO_DATA_ID = "client-no-data-card"
 CLIENT_SELECTED_MANUFACTURER_STORE_ID = "client-selected-manufacturer"
 GENERAL_SELECTED_MANUFACTURER_STORE_ID = "global-selected-manufacturer"
 CONTENT_GRID_ID = "pa-content-grid"
+REFRESH_BUTTON_ID = "pa-refresh-button"
 
 GENERAL_COLUMN_STYLE = {
     "display": "flex",
@@ -66,11 +67,12 @@ dash.register_page(
 
 
 def _default_year() -> int | None:
-    """Return the latest available year from preloaded summary data."""
+    """Return the latest available year from the live summary dataset."""
 
-    if not YEAR_OPTIONS:
+    years = get_summary_years()
+    if not years:
         return None
-    return int(sorted(YEAR_OPTIONS)[-1])
+    return int(sorted(years)[-1])
 
 
 DEFAULT_BRANCHES = ["L51", "L52"]
@@ -79,14 +81,17 @@ DEFAULT_BRANCHES = ["L51", "L52"]
 def layout():
     """Render the product analysis page layout."""
 
+    years_available = get_summary_years()
+    filialas_available = get_summary_filialai()
+
     year_options = [
         {"label": str(int(year)), "value": int(year)}
-        for year in sorted(YEAR_OPTIONS)
+        for year in sorted(years_available)
     ]
 
     branch_options = [
         {"label": branch, "value": branch}
-        for branch in FILIALAS_OPTIONS
+        for branch in filialas_available
     ]
 
     return html.Div(
@@ -120,8 +125,8 @@ def layout():
                             dcc.Dropdown(
                                 id=FILTER_BRANCH_ID,
                                 options=branch_options,
-                                value=[b for b in DEFAULT_BRANCHES if b in FILIALAS_OPTIONS]
-                                or FILIALAS_OPTIONS[:2],
+                                value=[b for b in DEFAULT_BRANCHES if b in filialas_available]
+                                or filialas_available[:2],
                                 multi=True,
                                 clearable=False,
                                 placeholder="All branches",
@@ -172,6 +177,29 @@ def layout():
                             ),
                         ],
                         style={"flex": "1 1 260px", "minWidth": "220px"},
+                    ),
+                    html.Div(
+                        [
+                            html.Button(
+                                "Atnaujinti duomenis",
+                                id=REFRESH_BUTTON_ID,
+                                n_clicks=0,
+                                style={
+                                    "padding": "8px 16px",
+                                    "border": f"1px solid {IC_NAVY}",
+                                    "background": IC_WHITE,
+                                    "color": IC_NAVY,
+                                    "borderRadius": "8px",
+                                    "fontWeight": 600,
+                                },
+                            )
+                        ],
+                        style={
+                            "marginLeft": "auto",
+                            "display": "flex",
+                            "flexDirection": "column",
+                            "justifyContent": "flex-end",
+                        },
                     ),
                 ],
                 style={

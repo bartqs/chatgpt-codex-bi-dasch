@@ -273,14 +273,14 @@ def layout():
     Output("adv_f_metai", "options"),
     Output("adv_f_metai", "value"),
     Output("adv_f_segmentas", "options"),
+    Output("adv_f_segmentas", "value"),
     Output("adv_f_kategorija", "options"),
-    Output("adv_f_pardavejas", "options"),
+    Output("adv_f_kategorija", "value"),
     Input(REFRESH_BUTTON_ID, "n_clicks"),
     State("adv_f_filialas", "value"),
     State("adv_f_metai", "value"),
     State("adv_f_segmentas", "value"),
     State("adv_f_kategorija", "value"),
-    State("adv_f_pardavejas", "value"),
     prevent_initial_call=False,
 )
 def refresh_advisor_filters(
@@ -289,7 +289,6 @@ def refresh_advisor_filters(
     current_years,
     current_segment,
     current_category,
-    current_seller,
 ):
     _maybe_reset_advisor_caches()
 
@@ -299,19 +298,16 @@ def refresh_advisor_filters(
     year_opts = meta["years"]
     segment_opts = ["Visi"] + meta["segments"]
     category_opts = ["Visos"] + meta["categories"]
-    seller_opts = meta["sellers"]
 
     filialas_option_dicts = [{"label": f, "value": f} for f in filialas_opts]
     year_option_dicts = [{"label": int(y), "value": int(y)} for y in year_opts]
     segment_option_dicts = [{"label": s, "value": s} for s in segment_opts]
     category_option_dicts = [{"label": k, "value": k} for k in category_opts]
-    seller_option_dicts = [{"label": s, "value": s} for s in seller_opts]
 
     valid_filialas = {opt["value"] for opt in filialas_option_dicts}
     valid_years = {opt["value"] for opt in year_option_dicts}
     valid_segments = {opt["value"] for opt in segment_option_dicts}
     valid_categories = {opt["value"] for opt in category_option_dicts}
-    valid_sellers = {opt["value"] for opt in seller_option_dicts}
 
     default_year = year_opts[-1] if year_opts else None
 
@@ -320,14 +316,12 @@ def refresh_advisor_filters(
         metai_value = [default_year] if default_year is not None else []
         segment_value = "Visi"
         category_value = "Visos"
-        seller_value = None
     else:
         filialas_value = [f for f in (current_filialai or []) if f in valid_filialas] or filialas_opts
         metai_candidates = [int(y) for y in (current_years or []) if int(y) in valid_years]
         metai_value = metai_candidates or ([default_year] if default_year is not None else [])
         segment_value = current_segment if current_segment in valid_segments else "Visi"
         category_value = current_category if current_category in valid_categories else "Visos"
-        seller_value = current_seller if current_seller in valid_sellers else None
 
     return (
         filialas_option_dicts,
@@ -335,19 +329,22 @@ def refresh_advisor_filters(
         year_option_dicts,
         metai_value,
         segment_option_dicts,
+        segment_value,
         category_option_dicts,
-        seller_option_dicts,
+        category_value,
     )
 
 
 @callback(
     Output("adv_f_pardavejas", "options"),
+    Output("adv_f_pardavejas", "value"),
     Input("adv_f_filialas", "value"),
     Input("adv_f_metai", "value"),
     Input("adv_f_menesiai", "value"),
     Input("adv_f_segmentas", "value"),
     Input("adv_f_kategorija", "value"),
     Input(REFRESH_BUTTON_ID, "n_clicks"),
+    State("adv_f_pardavejas", "value"),
 )
 def adv_update_seller_options(
     filialai,
@@ -356,6 +353,7 @@ def adv_update_seller_options(
     segmentas,
     kategorija,
     _refresh_clicks,
+    current_seller,
 ):
     """Update seller dropdown options based on filters."""
     _maybe_reset_advisor_caches()
@@ -376,7 +374,12 @@ def adv_update_seller_options(
         d = d[d["Kategorija"] == kategorija]
 
     opts = sorted(d["Pardavejas_display"].dropna().unique().tolist())
-    return [{"label": s, "value": s} for s in opts]
+    option_dicts = [{"label": s, "value": s} for s in opts]
+
+    valid_values = {opt["value"] for opt in option_dicts}
+    seller_value = current_seller if current_seller in valid_values else None
+
+    return option_dicts, seller_value
 
 
 @callback(

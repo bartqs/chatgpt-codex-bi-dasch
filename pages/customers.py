@@ -798,20 +798,29 @@ def layout():
     Output("customer-code", "value"),
     Output("customer-years", "options"),
     Output("customer-years", "value"),
+    Output("customer-metric", "value"),
+    Output("customer-category-metric", "value"),
     Input(REFRESH_BUTTON_ID, "n_clicks"),
+    Input("customer-reset", "n_clicks"),
     State("customer-manager", "value"),
     State("customer-client", "value"),
     State("customer-code", "value"),
     State("customer-years", "value"),
+    State("customer-metric", "value"),
+    State("customer-category-metric", "value"),
     prevent_initial_call=False,
 )
-def refresh_customer_filters(
+def sync_customer_filters(
     _refresh_clicks,
+    _reset_clicks,
     current_managers,
     current_clients,
     current_codes,
     current_years,
+    current_metric,
+    current_category_metric,
 ):
+    triggered = ctx.triggered_id
     _maybe_reset_customer_caches()
 
     frame = get_customer_filter_frame()
@@ -840,19 +849,30 @@ def refresh_customer_filters(
     valid_codes = {opt["value"] for opt in code_option_dicts}
     valid_years = {opt["value"] for opt in year_option_dicts}
 
-    if ctx.triggered_id is None:
+    if triggered is None or triggered == "customer-reset":
         manager_value = []
         client_value = []
         code_value = []
         years_value = default_years
+        metric_value = "APYVARTA"
+        category_metric_value = "APYVARTA"
     else:
         manager_value = [m for m in (current_managers or []) if m in valid_managers]
         client_value = [c for c in (current_clients or []) if c in valid_clients]
         code_value = [c for c in (current_codes or []) if c in valid_codes]
-        years_value = [int(y) for y in (current_years or []) if int(y) in valid_years]
 
+        normalized_years = []
+        for y in current_years or []:
+            try:
+                normalized_years.append(int(y))
+            except (TypeError, ValueError):
+                continue
+        years_value = [y for y in normalized_years if y in valid_years]
         if not years_value:
             years_value = default_years
+
+        metric_value = current_metric or "APYVARTA"
+        category_metric_value = current_category_metric or "APYVARTA"
 
     return (
         manager_option_dicts,
@@ -863,6 +883,8 @@ def refresh_customer_filters(
         code_value,
         year_option_dicts,
         years_value,
+        metric_value,
+        category_metric_value,
     )
 
 
@@ -1262,30 +1284,6 @@ def update_codes(managers, clients, _refresh_clicks):
         df = df[df["Klientas"].isin(selected)]
     options = sorted(df["Kliento kodas"].dropna().unique().tolist())
     return [{"label": c, "value": c} for c in options]
-
-
-@callback(
-    Output("customer-manager", "value"),
-    Output("customer-client", "value"),
-    Output("customer-code", "value"),
-    Output("customer-years", "value"),
-    Output("customer-metric", "value"),
-    Output("customer-category-metric", "value"),
-    Input("customer-reset", "n_clicks"),
-    prevent_initial_call=True,
-)
-def reset_filters(n_clicks):
-    year_opts = get_customer_year_options()
-    latest_year = get_latest_customer_year()
-    if year_opts:
-        sorted_years = sorted(year_opts)
-        default_years = sorted_years[-2:] if len(sorted_years) >= 2 else [sorted_years[-1]]
-    elif latest_year:
-        default_years = [latest_year]
-    else:
-        default_years = []
-
-    return [], [], [], default_years, "APYVARTA", "APYVARTA"
 
 
 @callback(

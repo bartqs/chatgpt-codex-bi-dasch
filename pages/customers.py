@@ -792,9 +792,7 @@ def layout():
 @callback(
     Output("customer-manager", "options"),
     Output("customer-manager", "value"),
-    Output("customer-client", "options"),
     Output("customer-client", "value"),
-    Output("customer-code", "options"),
     Output("customer-code", "value"),
     Output("customer-years", "options"),
     Output("customer-years", "value"),
@@ -877,9 +875,7 @@ def sync_customer_filters(
     return (
         manager_option_dicts,
         manager_value,
-        client_option_dicts,
         client_value,
-        code_option_dicts,
         code_value,
         year_option_dicts,
         years_value,

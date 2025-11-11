@@ -27,6 +27,31 @@ Follow the steps below to run the application locally:
 Ensure that the MySQL database referenced in the application is accessible
 before launching the app.
 
+## Data refresh behaviour
+
+Every analytics page now loads data from MySQL on demand. The summary,
+product, advisor, and customer pages each expose a “Atnaujinti duomenis”
+button alongside the existing filters. Clicking the button clears all
+in-memory caches and re-runs the relevant queries so the UI immediately
+reflects newly ingested rows. When the app process starts the first page
+visit triggers a fresh read as well. Default “latest month/year” selections
+are now derived from the current database contents via `MAX` calculations,
+so the controls and visuals automatically advance when new periods arrive.
+
+## Updated files
+
+- `data/app_data.py` – replaces module-level DataFrame loads with on-demand
+  MySQL helpers and provides `reset_data_caches` for manual refreshes.
+- `pages/overview.py` – sources filter defaults from live data and wires the
+  refresh button to clear caches before re-running queries.
+- `pages/product_page.py` & `pages/product_callbacks.py` – fetch product
+  metadata per render, expose a refresh button, and make all data callbacks
+  re-query MySQL when triggered.
+- `pages/sales_advisor.py` – mirrors the new refresh workflow for advisor
+  visuals and dropdowns.
+- `pages/customers.py` – ensures customer filters, charts, and exports always
+  read from the latest database state and participate in manual refreshes.
+
 ## Klientų apžvalga
 
 Trečiasis puslapis „Klientų apžvalga“ (adresu `/customers`) leidžia analizuoti

@@ -3,7 +3,7 @@ from html import escape
 import dash
 import pandas as pd
 import time
-from dash import Input, Output, State, callback, dash_table, dcc, html
+from dash import Input, Output, State, callback, dash_table, dcc, html, ctx
 import plotly.graph_objects as go
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
@@ -28,6 +28,7 @@ from data.app_data import (
     get_customer_filter_frame,
     get_customer_year_options,
     get_latest_customer_year,
+    reset_data_caches,
 )
 
 
@@ -39,21 +40,13 @@ dash.register_page(
 )
 
 
-FILTER_FRAME = get_customer_filter_frame()
-MANAGER_OPTIONS = sorted(FILTER_FRAME["Vadybininkas"].dropna().unique().tolist())
-CLIENT_OPTIONS = sorted(FILTER_FRAME["Klientas"].dropna().unique().tolist())
-CODE_OPTIONS = sorted(FILTER_FRAME["Kliento kodas"].dropna().unique().tolist())
-YEAR_OPTIONS = get_customer_year_options()
-LATEST_YEAR = get_latest_customer_year()
-DEFAULT_YEARS: List[int] = []
-if YEAR_OPTIONS:
-    sorted_years = sorted(YEAR_OPTIONS)
-    if len(sorted_years) >= 2:
-        DEFAULT_YEARS = sorted_years[-2:]
-    else:
-        DEFAULT_YEARS = [sorted_years[-1]]
-elif LATEST_YEAR:
-    DEFAULT_YEARS = [LATEST_YEAR]
+REFRESH_BUTTON_ID = "customer-refresh-button"
+
+
+def _maybe_reset_customer_caches() -> None:
+    if ctx.triggered_id == REFRESH_BUTTON_ID:
+        reset_data_caches()
+
 
 METRIC_COLUMN_MAP = {
     "APYVARTA": "Apyvarta",
@@ -223,13 +216,28 @@ NO_DATA_MESSAGE = html.Div(
 def layout():
     """Render the customer overview page."""
 
+    frame = get_customer_filter_frame()
+    manager_options = sorted(frame["Vadybininkas"].dropna().unique().tolist())
+    client_options = sorted(frame["Klientas"].dropna().unique().tolist())
+    code_options = sorted(frame["Kliento kodas"].dropna().unique().tolist())
+
+    year_options = get_customer_year_options()
+    latest_year = get_latest_customer_year()
+    if year_options:
+        sorted_years = sorted(year_options)
+        default_years = sorted_years[-2:] if len(sorted_years) >= 2 else [sorted_years[-1]]
+    elif latest_year:
+        default_years = [latest_year]
+    else:
+        default_years = []
+
     filter_row = html.Div(
         [
             html.Div(
                 [
                     html.Label("Pardavimų vadybininkas"),
                     dcc.Dropdown(
-                        options=[{"label": m, "value": m} for m in MANAGER_OPTIONS],
+                        options=[{"label": m, "value": m} for m in manager_options],
                         value=[],
                         multi=True,
                         placeholder="Visi",
@@ -242,7 +250,7 @@ def layout():
                 [
                     html.Label("Klientas"),
                     dcc.Dropdown(
-                        options=[{"label": c, "value": c} for c in CLIENT_OPTIONS],
+                        options=[{"label": c, "value": c} for c in client_options],
                         value=[],
                         multi=True,
                         placeholder="Pasirinkite klientą",
@@ -255,7 +263,7 @@ def layout():
                 [
                     html.Label("Kliento kodas"),
                     dcc.Dropdown(
-                        options=[{"label": c, "value": c} for c in CODE_OPTIONS],
+                        options=[{"label": c, "value": c} for c in code_options],
                         value=[],
                         multi=True,
                         placeholder="Visi kodai",
@@ -268,8 +276,8 @@ def layout():
                 [
                     html.Label("Metai"),
                     dcc.Dropdown(
-                        options=[{"label": int(y), "value": int(y)} for y in YEAR_OPTIONS],
-                        value=DEFAULT_YEARS,
+                        options=[{"label": int(y), "value": int(y)} for y in year_options],
+                        value=default_years,
                         multi=True,
                         placeholder="Metai",
                         id="customer-years",
@@ -306,6 +314,24 @@ def layout():
                     )
                 ],
                 style={"marginLeft": "auto"},
+            ),
+            html.Div(
+                [
+                    html.Button(
+                        "Atnaujinti duomenis",
+                        id=REFRESH_BUTTON_ID,
+                        n_clicks=0,
+                        style={
+                            "border": f"1px solid {IC_NAVY}",
+                            "background": IC_WHITE,
+                            "color": IC_NAVY,
+                            "padding": "8px 16px",
+                            "borderRadius": "8px",
+                            "fontWeight": 600,
+                        },
+                    )
+                ],
+                style={"display": "flex", "alignItems": "flex-end"},
             ),
         ],
         style={
@@ -763,6 +789,101 @@ def layout():
     )
 
 
+@callback(
+    Output("customer-manager", "options"),
+    Output("customer-manager", "value"),
+    Output("customer-client", "value"),
+    Output("customer-code", "value"),
+    Output("customer-years", "options"),
+    Output("customer-years", "value"),
+    Output("customer-metric", "value"),
+    Output("customer-category-metric", "value"),
+    Input(REFRESH_BUTTON_ID, "n_clicks"),
+    Input("customer-reset", "n_clicks"),
+    State("customer-manager", "value"),
+    State("customer-client", "value"),
+    State("customer-code", "value"),
+    State("customer-years", "value"),
+    State("customer-metric", "value"),
+    State("customer-category-metric", "value"),
+    prevent_initial_call=False,
+)
+def sync_customer_filters(
+    _refresh_clicks,
+    _reset_clicks,
+    current_managers,
+    current_clients,
+    current_codes,
+    current_years,
+    current_metric,
+    current_category_metric,
+):
+    triggered = ctx.triggered_id
+    _maybe_reset_customer_caches()
+
+    frame = get_customer_filter_frame()
+
+    manager_opts = sorted(frame["Vadybininkas"].dropna().unique().tolist())
+    client_opts = sorted(frame["Klientas"].dropna().unique().tolist())
+    code_opts = sorted(frame["Kliento kodas"].dropna().unique().tolist())
+
+    year_opts = get_customer_year_options()
+    latest_year = get_latest_customer_year()
+    if year_opts:
+        sorted_years = sorted(year_opts)
+        default_years = sorted_years[-2:] if len(sorted_years) >= 2 else [sorted_years[-1]]
+    elif latest_year:
+        default_years = [latest_year]
+    else:
+        default_years = []
+
+    manager_option_dicts = [{"label": m, "value": m} for m in manager_opts]
+    client_option_dicts = [{"label": c, "value": c} for c in client_opts]
+    code_option_dicts = [{"label": c, "value": c} for c in code_opts]
+    year_option_dicts = [{"label": int(y), "value": int(y)} for y in year_opts]
+
+    valid_managers = {opt["value"] for opt in manager_option_dicts}
+    valid_clients = {opt["value"] for opt in client_option_dicts}
+    valid_codes = {opt["value"] for opt in code_option_dicts}
+    valid_years = {opt["value"] for opt in year_option_dicts}
+
+    if triggered is None or triggered == "customer-reset":
+        manager_value = []
+        client_value = []
+        code_value = []
+        years_value = default_years
+        metric_value = "APYVARTA"
+        category_metric_value = "APYVARTA"
+    else:
+        manager_value = [m for m in (current_managers or []) if m in valid_managers]
+        client_value = [c for c in (current_clients or []) if c in valid_clients]
+        code_value = [c for c in (current_codes or []) if c in valid_codes]
+
+        normalized_years = []
+        for y in current_years or []:
+            try:
+                normalized_years.append(int(y))
+            except (TypeError, ValueError):
+                continue
+        years_value = [y for y in normalized_years if y in valid_years]
+        if not years_value:
+            years_value = default_years
+
+        metric_value = current_metric or "APYVARTA"
+        category_metric_value = current_category_metric or "APYVARTA"
+
+    return (
+        manager_option_dicts,
+        manager_value,
+        client_value,
+        code_value,
+        year_option_dicts,
+        years_value,
+        metric_value,
+        category_metric_value,
+    )
+
+
 def _format_table_value(metric: str, value):
     if value is None or pd.isna(value):
         return ""
@@ -1130,9 +1251,12 @@ def _build_status_text(managers, clients, codes, years, metric):
 @callback(
     Output("customer-client", "options"),
     Input("customer-manager", "value"),
+    Input(REFRESH_BUTTON_ID, "n_clicks"),
 )
-def update_clients(managers):
-    df = FILTER_FRAME
+def update_clients(managers, _refresh_clicks):
+    _maybe_reset_customer_caches()
+
+    df = get_customer_filter_frame()
     if managers:
         df = df[df["Vadybininkas"].isin(managers)]
     options = sorted(df["Klientas"].dropna().unique().tolist())
@@ -1143,9 +1267,12 @@ def update_clients(managers):
     Output("customer-code", "options"),
     Input("customer-manager", "value"),
     Input("customer-client", "value"),
+    Input(REFRESH_BUTTON_ID, "n_clicks"),
 )
-def update_codes(managers, clients):
-    df = FILTER_FRAME
+def update_codes(managers, clients, _refresh_clicks):
+    _maybe_reset_customer_caches()
+
+    df = get_customer_filter_frame()
     if managers:
         df = df[df["Vadybininkas"].isin(managers)]
     if clients:
@@ -1153,20 +1280,6 @@ def update_codes(managers, clients):
         df = df[df["Klientas"].isin(selected)]
     options = sorted(df["Kliento kodas"].dropna().unique().tolist())
     return [{"label": c, "value": c} for c in options]
-
-
-@callback(
-    Output("customer-manager", "value"),
-    Output("customer-client", "value"),
-    Output("customer-code", "value"),
-    Output("customer-years", "value"),
-    Output("customer-metric", "value"),
-    Output("customer-category-metric", "value"),
-    Input("customer-reset", "n_clicks"),
-    prevent_initial_call=True,
-)
-def reset_filters(n_clicks):
-    return [], [], [], DEFAULT_YEARS, "APYVARTA", "APYVARTA"
 
 
 @callback(
@@ -1188,8 +1301,11 @@ def reset_filters(n_clicks):
     Input("customer-years", "value"),
     Input("customer-metric", "value"),
     Input("customer-chart-type", "value"),
+    Input(REFRESH_BUTTON_ID, "n_clicks"),
 )
-def update_customer_view(managers, clients, codes, years, metric, chart_type):
+def update_customer_view(managers, clients, codes, years, metric, chart_type, _refresh_clicks):
+    _maybe_reset_customer_caches()
+
     status_text = _build_status_text(managers, clients, codes, years, metric)
     empty_children = EMPTY_MESSAGE
     empty_style = {
@@ -1629,11 +1745,21 @@ def export_customer_data(n_clicks, managers, clients, codes, years, metric):
     Input("customer-client", "value"),
     Input("customer-code", "value"),
     Input("customer-years", "value"),
+    Input(REFRESH_BUTTON_ID, "n_clicks"),
     State("customer-category-selected-group", "data"),
 )
 def update_category_table(
-    metric, show_changes_value, managers, clients, codes, years, selected_group
+    metric,
+    show_changes_value,
+    managers,
+    clients,
+    codes,
+    years,
+    _refresh_clicks,
+    selected_group,
 ):
+    _maybe_reset_customer_caches()
+
     metric = metric or "APYVARTA"
     show_changes = bool(show_changes_value and "show" in show_changes_value)
     table_style = dict(CATEGORY_TABLE_STYLE)
@@ -1809,6 +1935,7 @@ def update_category_table(
     Input("customer-client", "value"),
     Input("customer-code", "value"),
     Input("customer-years", "value"),
+    Input(REFRESH_BUTTON_ID, "n_clicks"),
     State("customer-category-table", "data"),
     State("customer-category-selected-group", "data"),
     State("customer-category-selected-category", "data"),
@@ -1822,10 +1949,13 @@ def update_category_detail(
     clients,
     codes,
     years,
+    _refresh_clicks,
     table_data,
     stored_selection,
     selected_category,
 ):
+    _maybe_reset_customer_caches()
+
     metric = metric or "APYVARTA"
     show_changes = bool(show_changes_value and "show" in show_changes_value)
 
@@ -2085,6 +2215,7 @@ def update_category_detail(
     Input("customer-code", "value"),
     Input("customer-years", "value"),
     Input("customer-category-selected-group", "data"),
+    Input(REFRESH_BUTTON_ID, "n_clicks"),
     State("customer-category-detail-table", "data"),
     State("customer-category-selected-category", "data"),
 )
@@ -2099,9 +2230,12 @@ def update_category_vendor(
     codes,
     years,
     selected_group,
+    _refresh_clicks,
     table_data,
     stored_category,
 ):
+    _maybe_reset_customer_caches()
+
     metric = metric or "APYVARTA"
     show_changes = bool(show_changes_value and "show" in show_changes_value)
 

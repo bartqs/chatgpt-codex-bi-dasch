@@ -13,7 +13,7 @@ from dash import Input, Output, State, callback, ctx
 from plotly import graph_objects as go
 from sqlalchemy import text
 
-from data.app_data import IC_GRAY, engine, get_columns, pick_col
+from data.app_data import IC_GRAY, engine, get_columns, pick_col, reset_data_caches
 
 from .product_page import (
     CLIENT_CHART_ID,
@@ -37,6 +37,7 @@ from .product_page import (
     GENERAL_CHART_ID,
     GENERAL_SELECTED_MANUFACTURER_STORE_ID,
     GENERAL_TABLE_ID,
+    REFRESH_BUTTON_ID,
 )
 
 
@@ -144,6 +145,26 @@ def _all_manufacturers() -> Tuple[str, ...]:
         df = pd.read_sql(stmt, conn)
 
     return tuple(df["Gamintojas"].dropna().astype(str))
+
+
+def _maybe_reset_product_caches() -> None:
+    """Clear product caches when the manual refresh button is triggered."""
+
+    if ctx.triggered_id != REFRESH_BUTTON_ID:
+        return
+
+    reset_data_caches()
+
+    _product_columns.cache_clear()
+    _manufacturer_expr.cache_clear()
+    _client_expr.cache_clear()
+    _client_code_column.cache_clear()
+    _all_manufacturers.cache_clear()
+
+    _TABLE_CACHE.clear()
+    _CHART_CACHE.clear()
+    _CLIENT_OPTIONS_CACHE.clear()
+    _CLIENT_CODES_CACHE.clear()
 
 
 def _format_currency(value: float) -> str:
@@ -778,8 +799,10 @@ def _build_chart(df: pd.DataFrame, manufacturer: Optional[str], year: Optional[i
 @callback(
     Output(FILTER_MANUFACTURER_ID, "options"),
     Input(FILTER_YEAR_ID, "value"),
+    Input(REFRESH_BUTTON_ID, "n_clicks"),
 )
-def populate_manufacturers(_: Any) -> List[Dict[str, str]]:
+def populate_manufacturers(_: Any, _refresh_clicks: Optional[int]) -> List[Dict[str, str]]:
+    _maybe_reset_product_caches()
     return [{"label": name, "value": name} for name in _all_manufacturers()]
 
 
@@ -789,14 +812,18 @@ def populate_manufacturers(_: Any) -> List[Dict[str, str]]:
     Input(FILTER_YEAR_ID, "value"),
     Input(FILTER_BRANCH_ID, "value"),
     Input(CLIENT_VIEW_TOGGLE_ID, "n_clicks"),
+    Input(REFRESH_BUTTON_ID, "n_clicks"),
     State(FILTER_CLIENT_ID, "value"),
 )
 def populate_clients(
     year: Optional[int],
     branches: Optional[Sequence[str]],
     _toggle_clicks: Optional[int],
+    _refresh_clicks: Optional[int],
     current_value: Optional[str],
 ):
+    _maybe_reset_product_caches()
+
     normalized_branches = _normalized_branches(branches)
     client_df = _fetch_clients(year, normalized_branches)
 
@@ -828,6 +855,7 @@ def populate_clients(
     Input(FILTER_BRANCH_ID, "value"),
     Input(FILTER_CLIENT_ID, "value"),
     Input(CLIENT_VIEW_TOGGLE_ID, "n_clicks"),
+    Input(REFRESH_BUTTON_ID, "n_clicks"),
     State(FILTER_CLIENT_CODE_ID, "value"),
 )
 def populate_client_codes(
@@ -835,8 +863,11 @@ def populate_client_codes(
     branches: Optional[Sequence[str]],
     client: Optional[str],
     _toggle_clicks: Optional[int],
+    _refresh_clicks: Optional[int],
     current_codes: Optional[Sequence[str]],
 ):
+    _maybe_reset_product_caches()
+
     trigger_id = ctx.triggered_id
 
     if trigger_id == CLIENT_VIEW_TOGGLE_ID:
@@ -894,13 +925,17 @@ def toggle_client_column(client_value: Optional[str]):
     Input(FILTER_BRANCH_ID, "value"),
     Input(FILTER_CLIENT_ID, "value"),
     Input(FILTER_CLIENT_CODE_ID, "value"),
+    Input(REFRESH_BUTTON_ID, "n_clicks"),
 )
 def update_tables(
     year: Optional[int],
     branches: Optional[Sequence[str]],
     client: Optional[str],
     client_codes: Optional[Sequence[str]],
+    _refresh_clicks: Optional[int],
 ):
+    _maybe_reset_product_caches()
+
     normalized_branches = _normalized_branches(branches)
 
     general_df = _fetch_table_data(year, normalized_branches)
@@ -1023,6 +1058,7 @@ def _empty_month_frame() -> pd.DataFrame:
     Input(FILTER_CLIENT_CODE_ID, "value"),
     Input(GENERAL_SELECTED_MANUFACTURER_STORE_ID, "data"),
     Input(CLIENT_SELECTED_MANUFACTURER_STORE_ID, "data"),
+    Input(REFRESH_BUTTON_ID, "n_clicks"),
 )
 def update_charts(
     year: Optional[int],
@@ -1032,7 +1068,10 @@ def update_charts(
     client_codes: Optional[Sequence[str]],
     general_selected: Optional[str],
     client_selected: Optional[str],
+    _refresh_clicks: Optional[int],
 ):
+    _maybe_reset_product_caches()
+
     normalized_branches = _normalized_branches(branches)
     normalized_manufacturer = str(manufacturer) if manufacturer else None
 

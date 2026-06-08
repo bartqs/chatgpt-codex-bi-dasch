@@ -13,6 +13,7 @@ from data.app_data import (
     SEGMENT_OPTIONS,
     SummaryCalculator,
     YEAR_OPTIONS,
+    perf_timer,
     df_sums,
     filter_dataframe,
 )
@@ -198,21 +199,27 @@ def layout():
 )
 def update_summary(metric, chart_type, segments, filialai, years_sel, months_sel):
     """Replicate the original summary tab callback behavior."""
-    years_sel = sorted(set(map(int, years_sel or YEAR_OPTIONS)))
+    with perf_timer("callback.update_summary", report="Suvestinė", metric=metric):
+        years_sel = sorted(set(map(int, years_sel or YEAR_OPTIONS)))
 
-    d = filter_dataframe(df_sums, segments=segments, filialai=filialai, years=years_sel)
+        with perf_timer("callback.update_summary.filter", source_rows=len(df_sums)):
+            d = filter_dataframe(df_sums, segments=segments, filialai=filialai, years=years_sel)
 
-    calc = SummaryCalculator(d)
+        with perf_timer("callback.update_summary.transform", filtered_rows=len(d)):
+            calc = SummaryCalculator(d)
 
-    fig_l51 = calc.create_branch_figure("L51", metric, chart_type, years_sel, months_sel)
-    fig_l52 = calc.create_branch_figure("L52", metric, chart_type, years_sel, months_sel)
+        with perf_timer("callback.update_summary.chart_generation"):
+            fig_l51 = calc.create_branch_figure("L51", metric, chart_type, years_sel, months_sel)
+            fig_l52 = calc.create_branch_figure("L52", metric, chart_type, years_sel, months_sel)
 
-    columns, data = calc.build_monthly_table(years_sel, months_sel, metric)
+        with perf_timer("callback.update_summary.table_generation"):
+            columns, data = calc.build_monthly_table(years_sel, months_sel, metric)
 
-    this_year = int(sorted(years_sel)[-1])
-    prev_candidates = [y for y in sorted(set(df_sums["Metai"])) if y < this_year]
-    prev_year = prev_candidates[-1] if prev_candidates else None
+        this_year = int(sorted(years_sel)[-1])
+        prev_candidates = [y for y in sorted(set(df_sums["Metai"])) if y < this_year]
+        prev_year = prev_candidates[-1] if prev_candidates else None
 
-    kpi_row = calc.calculate_kpis(this_year, prev_year, metric, months_sel)
+        with perf_timer("callback.update_summary.kpi_generation"):
+            kpi_row = calc.calculate_kpis(this_year, prev_year, metric, months_sel)
 
-    return fig_l51, fig_l52, columns, data, kpi_row
+        return fig_l51, fig_l52, columns, data, kpi_row

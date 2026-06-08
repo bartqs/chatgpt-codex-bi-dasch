@@ -15,9 +15,13 @@ from data.app_data import (
     MENUO_LABELS_LT,
     MENUO_TVARKA,
     SEGMENTAI_ADV,
-    aggregate_by_vendor,
-    df_adv,
-    filter_dataframe,
+    ADVISOR_TABLE_COLS,
+    PARDAVEJAI_ADV,
+    format_vendor_aggregate,
+    perf_timer,
+    query_advisor_seller_options,
+    query_advisor_vendor_aggregate,
+    query_advisor_vendor_timeseries,
     YEARS_ADV,
 )
 
@@ -39,7 +43,7 @@ def layout():
         "alignItems": "stretch",
         "margin": "6px 0 14px 0",
     }
-    TABLE_COLS = [{"name": c, "id": c} for c in ["Gamintojas", "Apyvarta", "Pajamos", "Marža %", "Kiekis"]]
+    TABLE_COLS = [{"name": c, "id": c} for c in ADVISOR_TABLE_COLS]
     TBL_PROPS = dict(
         style_table={"overflowX": "auto", "border": f"1px solid {IC_GRAY}", "borderRadius": "10px", "maxHeight": "70vh"},
         style_header={"backgroundColor": IC_NAVY, "color": IC_WHITE, "fontWeight": "700"},
@@ -56,13 +60,11 @@ def layout():
     default_year = 2025 if 2025 in YEARS_ADV else (YEARS_ADV[-1] if YEARS_ADV else None)
 
     if default_year is not None:
-        start_left_df = df_adv[df_adv["Metai"] == default_year]
-        if start_left_df.empty:
-            start_left_df = df_adv[df_adv["Metai"] == (YEARS_ADV[-1] if YEARS_ADV else default_year)]
+        start_left_df = query_advisor_vendor_aggregate(FILIALAI_ADV, [default_year], [], "Visi", "Visos")
     else:
-        start_left_df = df_adv.copy()
+        start_left_df = query_advisor_vendor_aggregate(FILIALAI_ADV, YEARS_ADV[-1:], [], "Visi", "Visos")
 
-    start_left = aggregate_by_vendor(start_left_df)
+    start_left = format_vendor_aggregate(start_left_df)
 
     return html.Div(
         [
@@ -140,7 +142,7 @@ def layout():
                             html.Label("Pardavėjas"),
                             dcc.Dropdown(
                                 id="adv_f_pardavejas",
-                                options=[{"label": s, "value": s} for s in sorted(df_adv["Pardavejas_display"].unique())],
+                                options=[{"label": s, "value": s} for s in PARDAVEJAI_ADV],
                                 value=None,
                                 multi=False,
                                 placeholder="(nepasirinkus – rodoma tik kairė lentelė)",
@@ -236,21 +238,17 @@ def layout():
 )
 def adv_update_seller_options(filialai, metai, menesiai, segmentas, kategorija):
     """Update seller dropdown options based on filters."""
-    filialai = filialai or []
-    metai = [int(y) for y in (metai or [])]
-    menesiai = menesiai or []
-    segmentas = segmentas or "Visi"
-    kategorija = kategorija or "Visos"
+    with perf_timer("callback.adv_update_seller_options", report="Pardavėjų patarėjas"):
+        filialai = filialai or []
+        metai = [int(y) for y in (metai or [])]
+        menesiai = menesiai or []
+        segmentas = segmentas or "Visi"
+        kategorija = kategorija or "Visos"
 
-    d = filter_dataframe(df_adv, filialai=filialai, years=metai, months=menesiai)
+        with perf_timer("callback.adv_update_seller_options.sql", report="seller_options"):
+            opts = query_advisor_seller_options(filialai, metai, menesiai, segmentas, kategorija)
 
-    if segmentas != "Visi":
-        d = d[d["Segmentas"] == segmentas]
-    if kategorija != "Visos":
-        d = d[d["Kategorija"] == kategorija]
-
-    opts = sorted(d["Pardavejas_display"].dropna().unique().tolist())
-    return [{"label": s, "value": s} for s in opts]
+        return [{"label": s, "value": s} for s in opts]
 
 
 @callback(
@@ -269,37 +267,37 @@ def adv_update_seller_options(filialai, metai, menesiai, segmentas, kategorija):
 )
 def adv_update_tables(filialai, metai, menesiai, segmentas, kategorija, pardavejas_display):
     """Update advisor tables based on filters."""
-    filialai = filialai or []
-    metai = [int(y) for y in (metai or [])]
-    menesiai = menesiai or []
-    segmentas = segmentas or "Visi"
-    kategorija = kategorija or "Visos"
+    with perf_timer("callback.adv_update_tables", report="Pardavėjų patarėjas", seller=pardavejas_display):
+        filialai = filialai or []
+        metai = [int(y) for y in (metai or [])]
+        menesiai = menesiai or []
+        segmentas = segmentas or "Visi"
+        kategorija = kategorija or "Visos"
 
-    d = filter_dataframe(df_adv, filialai=filialai, years=metai, months=menesiai)
+        with perf_timer("callback.adv_update_tables.sql", report="all_sellers"):
+            left_raw = query_advisor_vendor_aggregate(filialai, metai, menesiai, segmentas, kategorija)
+        with perf_timer("callback.adv_update_tables.transform", report="all_sellers", rows=len(left_raw)):
+            left_df = format_vendor_aggregate(left_raw)
+            left_cols = [{"name": c, "id": c} for c in ADVISOR_TABLE_COLS]
+            left_data = left_df.to_dict("records")
 
-    if segmentas != "Visi":
-        d = d[d["Segmentas"] == segmentas]
-    if kategorija != "Visos":
-        d = d[d["Kategorija"] == kategorija]
+        show_right = {"flex": "1 1 50%", "minWidth": "380px", "display": "none"}
+        right_cols = left_cols
+        right_data = []
+        title = ""
 
-    left_df = aggregate_by_vendor(d)
-    left_cols = [{"name": c, "id": c} for c in ["Gamintojas", "Apyvarta", "Pajamos", "Marža %", "Kiekis"]]
-    left_data = left_df.to_dict("records")
+        if pardavejas_display:
+            with perf_timer("callback.adv_update_tables.sql", report="selected_seller", seller=pardavejas_display):
+                right_raw = query_advisor_vendor_aggregate(
+                    filialai, metai, menesiai, segmentas, kategorija, pardavejas_display
+                )
+            with perf_timer("callback.adv_update_tables.transform", report="selected_seller", rows=len(right_raw)):
+                right_df = format_vendor_aggregate(right_raw)
+                right_data = right_df.to_dict("records")
+            show_right = {"flex": "1 1 50%", "minWidth": "380px", "display": "block"}
+            title = f"Pasirinkto pardavėjo rezultatai – {pardavejas_display}"
 
-    show_right = {"flex": "1 1 50%", "minWidth": "380px", "display": "none"}
-    right_cols = left_cols
-    right_data = []
-    title = ""
-
-    if pardavejas_display:
-        internal = "(ND)" if pardavejas_display == "E-commerce" else pardavejas_display
-        sdd = d[d["Pardavejas"].fillna("").str.strip() == internal]
-        right_df = aggregate_by_vendor(sdd)
-        right_data = right_df.to_dict("records")
-        show_right = {"flex": "1 1 50%", "minWidth": "380px", "display": "block"}
-        title = f"Pasirinkto pardavėjo rezultatai – {pardavejas_display}"
-
-    return left_cols, left_data, right_cols, right_data, show_right, title
+        return left_cols, left_data, right_cols, right_data, show_right, title
 
 
 @callback(
@@ -323,21 +321,17 @@ def update_vendor_timeseries(filialai, metai, menesiai, segmentas, kategorija, p
             empty_fig = go.Figure()
             return empty_fig, hidden_style
 
-        filialai = filialai or []
-        metai = [int(y) for y in (metai or [])]
-        menesiai = menesiai or []
-        segmentas = segmentas or "Visi"
-        kategorija = kategorija or "Visos"
+        with perf_timer("callback.update_vendor_timeseries", report="Pardavėjų patarėjas", seller=pardavejas_display, metric=metric):
+            filialai = filialai or []
+            metai = [int(y) for y in (metai or [])]
+            menesiai = menesiai or []
+            segmentas = segmentas or "Visi"
+            kategorija = kategorija or "Visos"
 
-        d = filter_dataframe(df_adv, filialai=filialai, years=metai, months=menesiai)
-
-        if segmentas != "Visi":
-            d = d[d["Segmentas"] == segmentas]
-        if kategorija != "Visos":
-            d = d[d["Kategorija"] == kategorija]
-
-        internal = "(ND)" if pardavejas_display == "E-commerce" else pardavejas_display
-        vendor_data = d[d["Pardavejas"].fillna("").str.strip() == internal]
+            with perf_timer("callback.update_vendor_timeseries.sql", seller=pardavejas_display):
+                vendor_data = query_advisor_vendor_timeseries(
+                    filialai, metai, menesiai, segmentas, kategorija, pardavejas_display
+                )
 
         def create_empty_figure(message="No data available"):
             empty_fig = go.Figure()
@@ -370,18 +364,13 @@ def update_vendor_timeseries(filialai, metai, menesiai, segmentas, kategorija, p
         if vendor_data.empty:
             return create_empty_figure("Nėra duomenų pasirinktam pardavėjui"), visible_style
 
-        vendor_data_copy = vendor_data.copy()
-        vendor_data_copy["Menuo"] = vendor_data_copy["Menuo"].astype(str)
-
-        agg = vendor_data_copy.groupby(["Metai", "Menuo"], as_index=False).agg(
-            {"Apyvarta": "sum", "Pajamos": "sum", "Kiekis": "sum"}
-        )
-
-        agg["Marža %"] = np.where(
-            agg["Apyvarta"] != 0,
-            (agg["Pajamos"] / agg["Apyvarta"]) * 100.0,
-            np.nan,
-        )
+        with perf_timer("callback.update_vendor_timeseries.transform", rows=len(vendor_data)):
+            agg = vendor_data.copy()
+            agg["Marža %"] = np.where(
+                agg["Apyvarta"] != 0,
+                (agg["Pajamos"] / agg["Apyvarta"]) * 100.0,
+                np.nan,
+            )
 
         years_in_data = sorted(agg["Metai"].unique())
 
